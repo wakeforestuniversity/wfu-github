@@ -1,0 +1,105 @@
+name: Reusable PHP Workflow
+
+on:
+  workflow_call:
+    inputs:
+      phpVersion:
+        required: true
+        type: string
+    secrets:
+      composerAuth:
+        required: true
+      codeClimateId:
+        required: true
+      securityToken:
+        required: true
+
+jobs:
+  setup:
+    name: Composer Setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+        id: cache-composer
+        with:
+          php-version: ${{ inputs.phpVersion }}
+
+      - name: Validate composer.json and composer.lock
+        run: composer validate
+
+      - name: Install Dependencies
+        env:
+          COMPOSER_AUTH: '{"github-oauth": {"github.com": "${{secrets.composerAuth}}"} }'
+        run: composer install
+        if: steps.cache-composer.outputs.cache-hit != 'true'
+
+  composer:
+    name: Composer Validation
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+        id: cache-composer
+        with:
+          php-version: ${{ inputs.phpVersion }}
+
+      - name: Check file existence
+        id: check_files
+        uses: andstor/file-existence-action@v1
+        with:
+          files: "composer-uat.json, composer-pprd.json, composer-prod.json"
+
+      - name: Validate composer-uat.json if it exists.
+        if: steps.check_files.outputs.files_exists == 'true'
+        run: COMPOSER=composer-uat.json composer validate
+
+      - name: Validate composer-pprd.json if it exists.
+        if: steps.check_files.outputs.files_exists == 'true'
+        run: COMPOSER=composer-pprd.json composer validate
+
+      - name: Validate composer-prod.json if it exists.
+        if: steps.check_files.outputs.files_exists == 'true'
+        run: COMPOSER=composer-prod.json composer validate
+
+  testing:
+    name: Testing and Code Coverage (Code Climate)
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+        id: cache-composer
+        with:
+          php-version: ${{ inputs.phpVersion }}
+
+      - name: Code Climate Coverage Action
+        uses: paambaati/codeclimate-action@v3.0.0
+        env:
+          CC_TEST_REPORTER_ID: ${{secrets.codeClimateId}}
+        with:
+          coverageCommand: vendor/bin/phpunit --coverage-clover clover.xml
+          debug: true
+
+  security:
+    name: Security (Snyk)
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+        id: cache-composer
+        with:
+          php-version: ${{ inputs.phpVersion }}
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/php@master
+        env:
+          SNYK_TOKEN: ${{ secrets.securityToken }}
+        with:
+          args: --severity-threshold=low --all-projects
