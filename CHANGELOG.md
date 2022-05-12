@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (@022-05-13)
+## 0.2.0 (2022-05-13)
 
 * Adding ability to set composer file to use for PHP workflow.
   * WordPress has plugins that are loaded from an S3 bucket that GitHub doesn't have access to.
