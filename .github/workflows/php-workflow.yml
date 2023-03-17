@@ -53,7 +53,7 @@ jobs:
 
       - name: Check file existence
         id: check_files
-        uses: andstor/file-existence-action@v1
+        uses: andstor/file-existence-action@v2
         with:
           files: "composer-dev.json, composer-uat.json, composer-pprd.json, composer-prod.json"
 

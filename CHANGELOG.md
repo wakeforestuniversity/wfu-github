@@ -1,5 +1,10 @@
 # Changelog
 
+
+## 0.3.2 (2023-03-17)
+
+* Updating `file-existence` action to v2 so its no longer using Node 12.
+
 ## 0.3.1 (2023-03-17)
 
 * PHP8 only supports xdebug not xdebug2 so fixing that.
