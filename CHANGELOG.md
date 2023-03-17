@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0 (2023-03-17)
+
+* Updating action versions to newest so workflow is running on Node 16 not Node 12.
+
 ## 0.2.0 (2022-05-13)
 
 * Adding ability to set composer file to use for PHP workflow.

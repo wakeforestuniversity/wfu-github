@@ -26,7 +26,7 @@ runs:
 
     - name: Cache Composer Packages
       id: composer-cache
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       with:
         path: vendor
         # Make the cache dependencies depending on the PHP version for matrix
