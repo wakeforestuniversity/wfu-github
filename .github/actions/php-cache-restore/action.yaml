@@ -22,7 +22,7 @@ runs:
       uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ inputs.php-version }}
-        coverage: xdebug2
+        coverage: xdebug
 
     - name: Cache Composer Packages
       id: composer-cache

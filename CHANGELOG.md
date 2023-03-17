@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2023-03-17)
+
+* PHP8 only supports xdebug not xdebug2 so fixing that.
+
 ## 0.3.0 (2023-03-17)
 
 * Updating action versions to newest so workflow is running on Node 16 not Node 12.
