@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0 (2024-02-08)
+
+* Changing from using master branch to v1.0
+
 ## 1.0.0 (2024-02-07)
 
 * Updated to the currently active version
