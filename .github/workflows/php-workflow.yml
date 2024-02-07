@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@v1
         id: cache-composer
         with:
           php-version: ${{ inputs.phpVersion }}
@@ -46,7 +46,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@v1
         id: cache-composer
         with:
           php-version: ${{ inputs.phpVersion }}
@@ -80,7 +80,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@v1
         id: cache-composer
         with:
           php-version: ${{ inputs.phpVersion }}
@@ -100,7 +100,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@master
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@v1
         id: cache-composer
         with:
           php-version: ${{ inputs.phpVersion }}
