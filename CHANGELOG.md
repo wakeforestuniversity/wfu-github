@@ -4,6 +4,10 @@
 
 * Changing from using master branch to v1.0
 
+## 1.0.0 (2024-02-07)
+
+* Updated to the currently active version
+
 ## 0.3.2 (2023-03-17)
 
 * Updating `file-existence` action to v2 so its no longer using Node 12.
