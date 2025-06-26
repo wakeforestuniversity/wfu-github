@@ -13,7 +13,7 @@ on:
     secrets:
       composerAuth:
         required: true
-      codeClimateId:
+      qltyCoverageToken:
         required: true
       securityToken:
         required: true
@@ -85,13 +85,11 @@ jobs:
         with:
           php-version: ${{ inputs.phpVersion }}
 
-      - name: Code Climate Coverage Action
-        uses: paambaati/codeclimate-action@v3.2.0
-        env:
-          CC_TEST_REPORTER_ID: ${{ secrets.codeClimateId }}
+      - uses: qltysh/qlty-action/coverage@v1
         with:
-          coverageCommand: vendor/bin/phpunit --coverage-clover clover.xml
-          debug: true
+          token: ${{inputs.qltyCoverageToken}}
+          format: clover
+          file: clover.xml
 
   security:
     name: Security (Snyk)
