@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0 (2025-06-26)
+
+* Switching from using Code Climate to Qlty
+
 ## 1.1.0 (2024-02-08)
 
 * Changing from using master branch to v1.0
