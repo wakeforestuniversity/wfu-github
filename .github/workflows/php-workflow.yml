@@ -87,7 +87,7 @@ jobs:
 
       - uses: qltysh/qlty-action/coverage@v1
         with:
-          token: ${{inputs.qltyCoverageToken}}
+          token: ${{ inputs.qltyCoverageToken }}
           format: clover
           file: clover.xml
 
