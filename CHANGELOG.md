@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0 (2025-11-XX)
+
+* Adding reusable JavaScript linting job to the PHP workflow
+
 ## 1.2.0 (2025-06-26)
 
 * Switching from using Code Climate to Qlty
