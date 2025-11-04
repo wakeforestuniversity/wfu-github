@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.0 (2025-11-04)
+## 1.3.0 (2025-11-XX)
 
 * Adding reusable JavaScript linting job to the PHP workflow
 
