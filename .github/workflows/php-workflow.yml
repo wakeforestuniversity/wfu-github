@@ -109,3 +109,45 @@ jobs:
           SNYK_TOKEN: ${{ secrets.securityToken }}
         with:
           args: --severity-threshold=low --all-projects
+
+  js-lint:
+    name: JavaScript Linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for package.json
+        id: has_package
+        uses: andstor/file-existence-action@v2
+        with:
+          files: "package.json"
+
+      - name: Determine lint script availability
+        if: steps.has_package.outputs.files_exists == 'true'
+        id: has_lint_script
+        run: |
+          if jq -e '.scripts["lint:js"]' package.json >/dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        if: steps.has_lint_script.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install npm dependencies
+        if: steps.has_lint_script.outputs.enabled == 'true'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run JavaScript linting
+        if: steps.has_lint_script.outputs.enabled == 'true'
+        run: npm run lint:js
