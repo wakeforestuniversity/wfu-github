@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0 (2026-02-26)
+
+* Adding comprehensive developer documentation covering architecture, APIs, and contribution guidelines
+* Adding WordPress admin guide with configuration and usage instructions
+* Adding frontend user guide documenting visitor-facing features
+* Adding documentation maintenance requirements to CLAUDE.md and README.md
+
 ## 1.2.0 (2025-06-26)
 
 * Switching from using Code Climate to Qlty
