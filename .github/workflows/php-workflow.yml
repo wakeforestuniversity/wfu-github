@@ -107,6 +107,34 @@ jobs:
           format: clover
           file: clover.xml
 
+  standards:
+    name: Coding Standards (PHPCS)
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: wakeforestuniversity/wfu-github/.github/actions/php-cache-restore@v1
+        id: cache-composer
+        with:
+          php-version: ${{ inputs.phpVersion }}
+
+      # Fails on errors, reports warnings without failing. Warnings across the
+      # WFU repositories are largely TODO comments and long-standing advisory
+      # notices; treating them as blocking would gate unrelated work on
+      # cleanup nobody scheduled. Errors are the standard the team actually
+      # holds itself to, and are what phpcbf can usually fix.
+      #
+      # Skips cleanly where a repository has no phpcs.xml, so this is safe to
+      # adopt everywhere at once.
+      - name: Run PHPCS
+        run: |
+          if [ -f phpcs.xml ] || [ -f phpcs.xml.dist ] || [ -f .phpcs.xml ] || [ -f .phpcs.xml.dist ]; then
+            vendor/bin/phpcs --runtime-set ignore_warnings_on_exit 1
+          else
+            echo "No phpcs.xml in this repository; skipping PHPCS."
+          fi
+
   security:
     name: Security (Snyk)
     needs: setup
