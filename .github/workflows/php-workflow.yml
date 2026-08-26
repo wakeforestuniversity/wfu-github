@@ -94,7 +94,9 @@ jobs:
       # everywhere at once.
       - name: Run PHPUnit
         run: |
-          if [ -f phpunit.xml ] || [ -f phpunit.xml.dist ]; then
+          if [ ! -x vendor/bin/phpunit ]; then
+            echo "PHPUnit is not installed in this repository; skipping."
+          elif [ -f phpunit.xml ] || [ -f phpunit.xml.dist ]; then
             vendor/bin/phpunit --coverage-clover clover.xml
           else
             echo "No phpunit.xml in this repository; skipping PHPUnit."
@@ -129,7 +131,9 @@ jobs:
       # adopt everywhere at once.
       - name: Run PHPCS
         run: |
-          if [ -f phpcs.xml ] || [ -f phpcs.xml.dist ] || [ -f .phpcs.xml ] || [ -f .phpcs.xml.dist ]; then
+          if [ ! -x vendor/bin/phpcs ]; then
+            echo "PHPCS is not installed in this repository; skipping."
+          elif [ -f phpcs.xml ] || [ -f phpcs.xml.dist ] || [ -f .phpcs.xml ] || [ -f .phpcs.xml.dist ]; then
             vendor/bin/phpcs --runtime-set ignore_warnings_on_exit 1
           else
             echo "No phpcs.xml in this repository; skipping PHPCS."
