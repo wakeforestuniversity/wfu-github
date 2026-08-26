@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1 (2026-08-26)
+
+* Guarding the PHPUnit and PHPCS steps on the tool actually being installed, not just on its configuration file being present. `app-web-aws-wp` ships a `phpcs.xml` but does not require `squizlabs/php_codesniffer`, so the new standards job died with `vendor/bin/phpcs: No such file or directory` and exit 127 rather than skipping. A config file is evidence of intent, not of an installed binary, and the two come apart more often than expected across the WFU repositories.
+
 ## 1.4.0 (2026-08-26)
 
 * Adding a "Coding Standards (PHPCS)" job. Every WFU PHP repository ships a `phpcs.xml` and the team treats PHPCS as the standard, but nothing has ever run it automatically: standards compliance has depended entirely on a developer remembering to run it locally. Two errors reached an approved, green pull request this week and were caught only by hand.
