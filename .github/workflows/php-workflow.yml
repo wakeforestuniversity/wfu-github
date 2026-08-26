@@ -85,9 +85,25 @@ jobs:
         with:
           php-version: ${{ inputs.phpVersion }}
 
+      # Without this step nothing generates clover.xml and no test ever runs:
+      # the job uploaded a coverage file that did not exist and reported
+      # success regardless. Each consuming repository keeps its own
+      # phpunit.xml, which is the only configuration that can bootstrap its
+      # tests, so this defers to that file rather than imposing one. Skipping
+      # cleanly where a repository has no suite keeps this safe to adopt
+      # everywhere at once.
+      - name: Run PHPUnit
+        run: |
+          if [ -f phpunit.xml ] || [ -f phpunit.xml.dist ]; then
+            vendor/bin/phpunit --coverage-clover clover.xml
+          else
+            echo "No phpunit.xml in this repository; skipping PHPUnit."
+          fi
+
       - uses: qltysh/qlty-action/coverage@v1
+        if: hashFiles('clover.xml') != ''
         with:
-          token: ${{ inputs.qltyCoverageToken }}
+          token: ${{ secrets.qltyCoverageToken }}
           format: clover
           file: clover.xml
 
