@@ -176,8 +176,28 @@ jobs:
       #
       # Skips cleanly where a repository has no `composer.lock`, matching how
       # the PHPUnit and PHPCS steps guard themselves.
+      #
+      # The guard is a shell test rather than `hashFiles('composer.lock')`.
+      # `hashFiles` returns an empty string here even when the file is present
+      # and checked out, which silently made the condition false and skipped
+      # the scan while the job still reported success. The same emptiness is
+      # visible in this workflow's cache key, which resolves to
+      # `composer-packages-<php>-` on every run. A guard that quietly disables
+      # a security scan is worse than the failure it was meant to tidy up, so
+      # this uses a check that can be read directly from the log.
+      - name: Check for composer.lock
+        id: check_lock
+        run: |
+          if [ -f composer.lock ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "composer.lock found; Snyk will scan it."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No composer.lock in this repository; skipping Snyk."
+          fi
+
       - name: Run Snyk to check for vulnerabilities
-        if: hashFiles('composer.lock') != ''
+        if: steps.check_lock.outputs.exists == 'true'
         uses: snyk/actions/php@master
         env:
           SNYK_TOKEN: ${{ secrets.securityToken }}

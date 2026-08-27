@@ -6,6 +6,7 @@
 * Note that this has meant a red Security check on every pull request in every consuming repository, for reasons unrelated to the code under review. A check that always fails reports nothing, and this one has been ignored accordingly.
 * Leaving the severity threshold at `low`. This change narrows what is scanned; it does not relax what counts as a finding.
 * Skipping the step where a repository has no `composer.lock`, matching how the PHPUnit and PHPCS steps guard themselves since 1.4.1.
+* Guarding on a shell test rather than `hashFiles('composer.lock')`. `hashFiles` returns an empty string in this workflow even when the file is present and checked out, so a `hashFiles` guard skipped the scan while the job still reported success. The same emptiness is visible in the cache key, which resolves to `composer-packages-<php>-` on every run. A guard that quietly disables a security scan is worse than the failure it was meant to tidy up.
 
 ## 1.4.1 (2026-08-26)
 
