@@ -151,9 +151,35 @@ jobs:
         with:
           php-version: ${{ inputs.phpVersion }}
 
+      # Scans the repository's own Composer dependencies, and only those.
+      #
+      # `--all-projects` walks every manifest in the checkout, which on a
+      # WordPress repository means far more than the application's
+      # dependencies: `vendor/composer/composer/composer.lock` (Composer's own
+      # bundled requirements, a build tool we neither ship nor execute in
+      # production) and every `package.json` in the tree. In `app-web-aws-wp`
+      # that is seven projects beyond the one anybody wants scanned, and the
+      # npm ones have no `node_modules`, so Snyk reports "Please run 'npm
+      # install' first" and exits non-zero on a dependency resolution failure
+      # rather than on a vulnerability. The only vulnerable project it found
+      # there was Composer's bundled lockfile.
+      #
+      # The result has been a job that fails on every pull request in every
+      # consuming repository, for reasons unrelated to that repository's code.
+      # A check that is always red reports nothing, and this one has been
+      # ignored accordingly.
+      #
+      # `--file=composer.lock` scans the resolved dependency tree the
+      # application actually installs, which is the thing a security gate is
+      # for. The severity threshold is deliberately left at `low`: this change
+      # narrows what is scanned, and does not relax what counts as a finding.
+      #
+      # Skips cleanly where a repository has no `composer.lock`, matching how
+      # the PHPUnit and PHPCS steps guard themselves.
       - name: Run Snyk to check for vulnerabilities
+        if: hashFiles('composer.lock') != ''
         uses: snyk/actions/php@master
         env:
           SNYK_TOKEN: ${{ secrets.securityToken }}
         with:
-          args: --severity-threshold=low --all-projects
+          args: --file=composer.lock --severity-threshold=low

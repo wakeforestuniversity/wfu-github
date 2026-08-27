@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.2 (2026-08-27)
+
+* Scoping the Snyk scan to the repository's own `composer.lock` instead of `--all-projects`. On a WordPress repository that flag walks every manifest in the checkout, so in `app-web-aws-wp` it scanned eight projects: the application's lockfile, `vendor/composer/composer/composer.lock` (Composer's own bundled requirements, a build tool that is neither shipped nor executed in production), and six `package.json` files. The npm projects have no `node_modules` in CI, so Snyk reported "Please run 'npm install' first" and exited non-zero on a dependency resolution failure rather than on a vulnerability, and the only vulnerable project it found was Composer's bundled lockfile.
+* Note that this has meant a red Security check on every pull request in every consuming repository, for reasons unrelated to the code under review. A check that always fails reports nothing, and this one has been ignored accordingly.
+* Leaving the severity threshold at `low`. This change narrows what is scanned; it does not relax what counts as a finding.
+* Skipping the step where a repository has no `composer.lock`, matching how the PHPUnit and PHPCS steps guard themselves since 1.4.1.
+
 ## 1.4.1 (2026-08-26)
 
 * Guarding the PHPUnit and PHPCS steps on the tool actually being installed, not just on its configuration file being present. `app-web-aws-wp` ships a `phpcs.xml` but does not require `squizlabs/php_codesniffer`, so the new standards job died with `vendor/bin/phpcs: No such file or directory` and exit 127 rather than skipping. A config file is evidence of intent, not of an installed binary, and the two come apart more often than expected across the WFU repositories.
