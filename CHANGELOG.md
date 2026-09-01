@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.0 (2026-09-01)
+
+* Adding two reusable Claude workflows, one that reviews pull requests and one that answers @claude mentions, so every WFU repository can share a single copy of each. Until now each repository carried its own full workflow files, and keeping them consistent meant opening a near-identical pull request in every repository for every fix; the WP-8343 cleanup needed ten of them in one day. A consuming repository now keeps only a small stub naming its triggers, and fixes to the review behavior land here once. Tracked as WP-8376.
+* The review workflow (`claude-review.yml`) carries everything the WP-8343 cleanup established: the `anthropics/claude-code-action@v1` reference, least-privilege job permissions, the credential-presence guard that fails loudly on a missing key, the REPO and PR NUMBER context lines, the posting instructions and `--allowedTools` grant without which the reviewer is permission-denied trying to comment, and `use_sticky_comment` so repeated pushes update one review comment instead of stacking new ones. A repository-specific review prompt can be passed as the `reviewPrompt` input; the context lines and posting instructions are wrapped around it automatically so a custom prompt cannot lose the ability to post. `allowedBots` passes through for repositories whose pull requests are opened by machines.
+* The mention workflow (`claude-mention.yml`) carries the shared @claude gate, the same credential guard, and runs the action in tag mode with no prompt and no pinned model.
+
 ## 1.4.1 (2026-08-26)
 
 * Guarding the PHPUnit and PHPCS steps on the tool actually being installed, not just on its configuration file being present. `app-web-aws-wp` ships a `phpcs.xml` but does not require `squizlabs/php_codesniffer`, so the new standards job died with `vendor/bin/phpcs: No such file or directory` and exit 127 rather than skipping. A config file is evidence of intent, not of an installed binary, and the two come apart more often than expected across the WFU repositories.
