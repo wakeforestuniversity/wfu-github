@@ -1,0 +1,53 @@
+name: Reusable Claude Mention Workflow
+#
+# The org-wide @claude responder. Consumer repositories keep only a stub whose
+# `on:` block subscribes to the comment and issue events and whose single job
+# `uses:` this workflow. The @claude gate lives here so every repository gets
+# the same trigger semantics. See WP-8376.
+
+on:
+  workflow_call:
+    secrets:
+      claudeKey:
+        required: true
+
+jobs:
+  claude:
+    name: Claude Code
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - name: Verify the Claude credential is available
+        env:
+          KEY: ${{ secrets.claudeKey }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The Claude credential is empty in this repository."
+            echo "The action treats a missing key as a no-op and reports success,"
+            echo "so a mention would be silently ignored. Pass the organization"
+            echo "secret UMC_CLAUDE_GITHUB_APP as claudeKey from the calling"
+            echo "workflow."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.claudeKey }}
+          # No model and no prompt on purpose: with no prompt the action runs
+          # in tag mode and answers the mention it was triggered by. The model
+          # falls through to the Claude Code CLI's own default.
