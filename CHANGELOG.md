@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 (2026-09-02)
+## 1.6.0 (2026-09-03)
 
 * Letting the shared Claude reviewer file a real approval. Until now its tool grants covered only comments, so every pass landed as a comment and the strongest signal it could send was prose. The reviewer now reads the pull request's existing review discussion first, judges only what is new on the changed lines, and either files an approval with a short statement of what it verified or posts its findings as comments.
 * Whether the platform accepts an approval from the reviewer's identity is unverified until the first live attempt; the prompt requires a refused submission to be reported in a comment, so a refusal is visible rather than silent. The prompt also forbids `--request-changes`, since a blocking verdict from the bot would sit until dismissed and humans decide what blocks.
