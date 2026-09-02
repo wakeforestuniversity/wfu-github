@@ -87,7 +87,7 @@ jobs:
             ${{ inputs.reviewPrompt }}
 
             Before writing anything, read the pull request's existing review
-            discussion with `gh pr view --comments` and `gh pr diff`. Do not re-raise
+            discussion with `gh pr view` and `gh pr diff`. Do not re-raise
             points earlier review passes already made or that the author has
             already addressed; judge only what is new on the changed lines.
 
@@ -97,9 +97,7 @@ jobs:
             top-level feedback and `mcp__github_inline_comment__create_inline_comment`
             (with `confirmed: true`) to flag specific lines. Either way your
             conclusion must land on the pull request itself; review text left
-            in the transcript reaches nobody. Never use
-            `gh pr review --request-changes`; a blocking verdict from you is a
-            comment, and humans decide what blocks. If the approval submission
-            is refused, say so in a comment rather than failing silently.
+            in the transcript reaches nobody. If the approval submission is
+            refused, say so in a comment rather than failing silently.
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"

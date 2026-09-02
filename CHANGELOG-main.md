@@ -1,11 +1,5 @@
 # Changelog
 
-## 1.6.0 (2026-09-03)
-
-* Letting the shared Claude reviewer file a real approval. Until now its tool grants covered only comments, so every pass landed as a comment and the strongest signal it could send was prose. The reviewer now reads the pull request's existing review discussion first, judges only what is new on the changed lines, and either files an approval with a short statement of what it verified or posts its findings as comments.
-* Whether the platform accepts an approval from the reviewer's identity is unverified until the first live attempt; the prompt requires a refused submission to be reported in a comment, so a refusal is visible rather than silent. The prompt also forbids `--request-changes`, since a blocking verdict from the bot would sit until dismissed and humans decide what blocks.
-* A reviewer approval satisfies branch protection's required review on every consuming repository, which is the point and is worth knowing before this reaches the `v1` tag.
-
 ## 1.5.0 (2026-09-01)
 
 * Adding two reusable Claude workflows, one that reviews pull requests and one that answers @claude mentions, so every WFU repository can share a single copy of each. Until now each repository carried its own full workflow files, and keeping them consistent meant opening a near-identical pull request in every repository for every fix; the WP-8343 cleanup needed ten of them in one day. A consuming repository now keeps only a small stub naming its triggers, and fixes to the review behavior land here once. Tracked as WP-8376.
