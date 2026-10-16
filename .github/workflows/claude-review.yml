@@ -1,37 +1,33 @@
-name: Reusable Claude Review Workflow
+name: Reusable Claude Standards Review
 #
-# The org-wide Claude pull request reviewer. Consumer repositories keep only a
-# stub whose `on:` block subscribes to pull_request events and whose single job
-# `uses:` this workflow, so the action version, permissions, credential guard,
-# prompt scaffolding, and posting tools live in exactly one place. The WP-8343
-# cleanup shipped ten near-identical PRs across five repos to fix what this
-# file now owns once; WP-8376 is the ticket that consolidated it.
+# The org-wide Claude pull request check. It reviews WFU style and
+# code-quality conventions only, never whether the code works, and its result
+# is a pass or fail check that branch protection can require. Consumer
+# repositories keep only a stub whose `on:` block subscribes to pull_request
+# events and whose single job `uses:` this workflow, so the model, the turn
+# limit, the rubric, the trigger rules, and the posting all live here.
+#
+# Claude does not post anything itself. It returns its findings as structured
+# output, and the steps after it update one comment on the pull request and
+# set the check result. That keeps the comment count at one per pull request
+# and makes the pass or fail decision a rule in this file rather than a
+# judgment in the model's transcript. See WP-8376 and WP-8511.
 
 on:
   workflow_call:
     inputs:
-      reviewPrompt:
+      repositoryRules:
         description: >-
-          Repository-specific review instructions. The REPO/PR context lines
-          and the posting instructions are added around this automatically,
-          so a custom prompt cannot accidentally lose the ability to post.
+          Extra rules for one repository, added to the shared rubric. Use this
+          for conventions only that repository has; it cannot remove a shared
+          rule.
         required: false
         type: string
-        default: |
-          Please review this pull request and provide feedback on:
-          - Code quality and best practices
-          - Potential bugs or issues
-          - Performance considerations
-          - Security concerns
-          - Test coverage
-
-          Read the repository's CLAUDE.md first if one exists; it carries the
-          repository's own rules. Be constructive and helpful in your feedback.
+        default: ''
       allowedBots:
         description: >-
           Comma-separated bot logins whose pull requests should still be
-          reviewed. The action refuses non-human actors by default, which
-          otherwise leaves machine-opened PRs as the only unreviewed ones.
+          reviewed. The action refuses non-human actors by default.
         required: false
         type: string
         default: ''
@@ -39,17 +35,58 @@ on:
       claudeKey:
         required: true
 
+env:
+  # The two cost controls. A run normally needs well under ten turns; the cap
+  # stops a confused run from spending more. Changing the model here changes
+  # it for every repository at once.
+  CLAUDE_MODEL: claude-sonnet-5-5
+  CLAUDE_MAX_TURNS: '20'
+  OVERRIDE_LABEL: standards-override
+  COMMENT_MARKER: '<!-- wfu-claude-standards-review -->'
+
 jobs:
-  claude-review:
-    name: Claude Code Review
+  review:
+    name: Claude Standards Review
+    # Drafts never run, which is where most of version 1's spending went.
+    # Label events only run for the override label, so tagging a pull
+    # request for any other reason does not buy a review.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+       github.event.label.name == 'standards-override')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: claude-standards-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
       issues: write
       id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BEFORE_SHA: ${{ github.event.before }}
+      EVENT_ACTION: ${{ github.event.action }}
+      HAS_OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'standards-override') }}
     steps:
+      - name: Honor the override label
+        id: override
+        run: |
+          if [ "$HAS_OVERRIDE" != "true" ]; then
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "active=true" >> "$GITHUB_OUTPUT"
+          printf '%s\n%s\n\n%s\n' "$COMMENT_MARKER" "### Claude standards review: overridden" \
+            "A person added the \`$OVERRIDE_LABEL\` label, so this check passes without a review. Remove the label to run the review again." > comment.md
+
       - name: Verify the Claude credential is available
+        if: steps.override.outputs.active == 'false'
         env:
           KEY: ${{ secrets.claudeKey }}
         run: |
@@ -62,33 +99,115 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout the pull request
+        if: steps.override.outputs.active == 'false'
+        uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
 
-      - name: Run Claude Code Review
+      # The verdict always covers the whole pull request, so a later push
+      # cannot turn the check green while an earlier violation is still there.
+      # The commits since the last reviewed push are named separately so the
+      # comment can say which findings are new.
+      - name: Work out what to review
+        if: steps.override.outputs.active == 'false'
+        id: scope
+        run: |
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          since=""
+          if [ "$EVENT_ACTION" = "synchronize" ] && git merge-base --is-ancestor "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null; then
+            since="$BEFORE_SHA"
+          fi
+          echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          git diff --stat "$merge_base" "$HEAD_SHA"
+
+      - name: Run the Claude standards review
+        if: steps.override.outputs.active == 'false'
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.claudeKey }}
           allowed_bots: ${{ inputs.allowedBots }}
-          # One review comment per PR, updated in place on later pushes, so a
-          # PR that sees several pushes does not accumulate a stack of
-          # near-identical reviews.
-          use_sticky_comment: true
-          # No model is pinned on purpose. `model` is not a v1 input; the
-          # equivalent is `claude_args: --model`. v1 declares no default of
-          # its own, so the value falls through to the Claude Code CLI's own
-          # default, which we do not pin or observe.
           prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+            You are the WFU standards check for pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
-            ${{ inputs.reviewPrompt }}
+            The whole pull request is `git diff ${{ steps.scope.outputs.merge_base }} ${{ github.event.pull_request.head.sha }}`.
+            ${{ steps.scope.outputs.since && format('The commits pushed since the last review are `git diff {0} {1}`. Set "new" to true only for findings on lines changed in that range.', steps.scope.outputs.since, github.event.pull_request.head.sha) || 'This is the first review of this pull request, so set "new" to true for every finding.' }}
 
-            Post your review to the pull request. Use `gh pr comment` for
-            top-level feedback, and `mcp__github_inline_comment__create_inline_comment`
-            (with `confirmed: true`) to flag specific lines. Only post GitHub
-            comments; review text left in the transcript reaches nobody.
+            Your only job is to check the lines this pull request adds or changes against the rules below. You are not a code reviewer. Do not comment on whether the code works, on logic, bugs, performance, security, architecture, tests, or design. Do not suggest improvements the rules do not require. Do not report anything on lines the pull request did not touch. Do not report formatting that PHPCS checks mechanically (spacing, indentation, brace placement, docblock tag presence), because a separate PHPCS job enforces it. If you are unsure whether something breaks a rule, leave it out. A short list of real violations is worth more than a long list of possible ones.
+
+            Rules (every rule blocks the merge unless it says advisory):
+
+            R1. No blank lines inside a function or method body.
+            R2. No inline comments inside a function or method body (`//`, `#`, or `/* */`). Docblocks above the function are the place for explanation. PHPCS directives such as `// phpcs:ignore` are allowed, and so are comments in procedural template files.
+            R3. Prefer guard clauses and early returns. Report a function whose main body is wrapped in an `if` that could instead return early, or `if` blocks nested three or more levels deep.
+            R4. No Hungarian notation in variable, parameter, or property names the pull request introduces, such as `$aItems`, `$sName`, `$oPost`, `$iCount`, `$bEnabled`, `$fRate`, or `$vValue`. WFU dropped this convention.
+            R5. Docblock summaries and descriptions are complete sentences that start with a capital letter and end with a period.
+            R6. Comments, docblocks, and CHANGELOG entries use American spelling (behavior, color, license, canceled, while rather than whilst).
+            R7. No new dependency on `wfu/wfu` or `wakeforestuniversity/wfu-plugin-helpers`, and no new use of their classes. Shared code belongs in the wfu-helpers mu-plugin.
+            R8. JavaScript identifiers the pull request introduces use camelCase and no Hungarian prefixes.
+            R9. If CHANGELOG.md changed, the new entry follows the WFU changelog standard: a version header with a date; a first bullet in plain English with no class names, method names, or file paths, closing with an "Affects ..." clause; any technical detail as sub-items under one "Technical details:" bullet; present-participle tense ("Adding", not "Added" or "Add"); sub-items indented with exactly two spaces per level, never tabs; and no `###` heading inside an entry.
+            R10. If the pull request changes a version anywhere (VERSION, the plugin or theme header `Version:`, a `define` of the plugin version, package.json, or the newest CHANGELOG header), every one of them that exists in the repository agrees on the same number.
+            R11. Every changed file ends with exactly one trailing newline, including VERSION.
+            R12 (advisory). New template rendering uses the wfu-helpers `RenderTrait` rather than a template class. Full admin page callbacks that include a template file directly are fine.
+            ${{ inputs.repositoryRules && format('{0}Repository-specific rules (these block the merge):{0}{1}', fromJSON('"\n"'), inputs.repositoryRules) || '' }}
+
+            Use `git diff` and the file tools to read only what you need. Return your result as the structured output: one finding per violation with the file path, the line number in the new version of the file, the rule id, one sentence saying what to change, whether it is advisory, and whether it is new. The summary is one or two plain sentences for the pull request author. Return an empty findings list when nothing breaks a rule.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --model ${{ env.CLAUDE_MODEL }}
+            --max-turns ${{ env.CLAUDE_MAX_TURNS }}
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","maxItems":40,"items":{"type":"object","additionalProperties":false,"required":["file","line","rule","detail","advisory","new"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"rule":{"type":"string"},"detail":{"type":"string"},"advisory":{"type":"boolean"},"new":{"type":"boolean"}}}}}}'
+
+      - name: Write the review comment
+        if: steps.override.outputs.active == 'false'
+        id: verdict
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          if [ -z "$RESULT" ] || ! echo "$RESULT" | jq -e '.findings' > /dev/null 2>&1; then
+            echo "::error::The review did not return a result. Check the Claude step log; a dead key or a spending cap shows up there."
+            exit 1
+          fi
+          blocking=$(echo "$RESULT" | jq '[.findings[] | select(.advisory | not)] | length')
+          advisory=$(echo "$RESULT" | jq '[.findings[] | select(.advisory)] | length')
+          if [ "$blocking" -gt 0 ]; then title="needs changes ($blocking to fix)"; else title="passed"; fi
+          {
+            echo "$COMMENT_MARKER"
+            echo "### Claude standards review: $title"
+            echo
+            echo "$RESULT" | jq -r '.summary'
+            echo
+            if [ "$((blocking + advisory))" -gt 0 ]; then
+              echo "| | File | Rule | What to change |"
+              echo "|---|---|---|---|"
+              echo "$RESULT" | jq -r '.findings | sort_by(.advisory, .file, .line)[] | "| \(if .advisory then "advisory" elif .new then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"'
+              echo
+            fi
+            echo "<sub>Reviewed ${HEAD_SHA:0:7}. This check looks only at WFU style and code-quality conventions, not at whether the code works. If a finding is wrong, a person can add the \`$OVERRIDE_LABEL\` label to pass the check.</sub>"
+          } > comment.md
+          echo "blocking=$blocking" >> "$GITHUB_OUTPUT"
+
+      - name: Post or update the review comment
+        if: always() && hashFiles('comment.md') != ''
+        run: |
+          repo="${{ github.repository }}"
+          existing=$(gh api "repos/$repo/issues/$PR_NUMBER/comments" --paginate \
+            --jq "[.[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\")))][0].id // empty" | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$repo/issues/comments/$existing" -F body=@comment.md > /dev/null
+          else
+            gh api -X POST "repos/$repo/issues/$PR_NUMBER/comments" -F body=@comment.md > /dev/null
+          fi
+
+      - name: Set the check result
+        if: steps.override.outputs.active == 'false'
+        env:
+          BLOCKING: ${{ steps.verdict.outputs.blocking }}
+        run: |
+          if [ "$BLOCKING" != "0" ]; then
+            echo "::error::$BLOCKING standards finding(s) to fix. See the review comment on the pull request."
+            exit 1
+          fi

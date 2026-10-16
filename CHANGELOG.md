@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.0 (2026-10-19)
+
+* Pull request checks now test the code that is actually in the pull request, and the Claude review now checks only our style rules. Before, the shared checks could reuse old copies of a repository's libraries, so new libraries never reached the tests, and the Claude review ran on every push, including drafts, and commented on everything. It now waits until a pull request is ready, leaves one comment, and passes or fails like any other check. Affects every developer opening pull requests in repositories that move to `@v2`.
+* Technical details:
+  * Publishing as `v2` so each repository opts in through its own pull request; `v1` stays where it is.
+  * Caching Composer's download cache instead of `vendor/`, keyed on the composer file, with restore keys.
+  * Running `composer install` in every job instead of only on a cache miss in Composer Setup (WP-8780).
+  * Failing the testing job when a repository has a `phpunit.xml` but PHPUnit did not install.
+  * Replacing the file-existence action with a shell loop and removing the unused cache-restore composite action.
+  * Moving to `actions/checkout@v6` and `actions/cache@v5`, and pinning Snyk to `v1.0.0` instead of `master`.
+  * Rebuilding `claude-review.yml` as a standards-only check with a fixed rubric, model and turn cap (WP-8511).
+  * Skipping drafts and unrelated label events, and canceling a running review when a newer push arrives.
+  * Judging the whole pull request on every run, while marking which findings came from the latest push.
+  * Returning findings as structured output, so the workflow posts one updated comment and sets the check result.
+  * Letting a person pass the check with the `standards-override` label when a finding is wrong.
+  * Replacing `reviewPrompt` with `repositoryRules`, which adds rules for one repository without replacing the shared ones.
+  * Setting the model and a turn cap on `claude-mention.yml` too.
+
 ## 1.5.0 (2026-09-01)
 
 * Adding two reusable Claude workflows, one that reviews pull requests and one that answers @claude mentions, so every WFU repository can share a single copy of each. Until now each repository carried its own full workflow files, and keeping them consistent meant opening a near-identical pull request in every repository for every fix; the WP-8343 cleanup needed ten of them in one day. A consuming repository now keeps only a small stub naming its triggers, and fixes to the review behavior land here once. Tracked as WP-8376.
