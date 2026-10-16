@@ -15,6 +15,7 @@
   * Judging the whole pull request on every run, while marking which findings came from the latest push.
   * Returning findings as structured output, so the workflow posts one updated comment and sets the check result.
   * Replacing that comment with a "did not complete" note whenever a run fails before it has a result.
+  * Running Claude on the job's own token, so an adoption pull request is reviewed before the stub reaches main.
   * Letting a person pass the check with the `standards-override` label when a finding is wrong.
   * Replacing `reviewPrompt` with `repositoryRules`, which adds rules for one repository without replacing the shared ones.
   * Setting the model and a turn cap on `claude-mention.yml` too.
