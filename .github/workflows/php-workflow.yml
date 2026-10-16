@@ -8,6 +8,12 @@ name: Reusable PHP Workflow
 # cache, which only makes installs faster and can never stand in for one.
 # Installing per job also covers packages Composer places outside vendor/,
 # such as the app repository's plugins under wp-content/. See WP-8780.
+#
+# The cache key ends in the run ID so every run saves a fresh copy; without a
+# committed lock file the composer file rarely changes, and a fixed key would
+# never be saved again after its first run. Composer Setup's install keeps the
+# job name branch protection already requires and warms the cache for the
+# jobs after it.
 
 on:
   workflow_call:
@@ -40,7 +46,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ inputs.phpVersion }}
-          coverage: xdebug
+          coverage: none
       - &cache-dir
         name: Locate the Composer download cache
         id: composer-cache
@@ -50,8 +56,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
-          key: composer-downloads-${{ inputs.phpVersion }}-${{ hashFiles(inputs.composerFile, '**/composer.lock') }}
-          restore-keys: composer-downloads-${{ inputs.phpVersion }}-
+          key: composer-downloads-${{ inputs.phpVersion }}-${{ hashFiles(inputs.composerFile, '**/composer.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            composer-downloads-${{ inputs.phpVersion }}-${{ hashFiles(inputs.composerFile, '**/composer.lock') }}-
+            composer-downloads-${{ inputs.phpVersion }}-
 
       - name: Validate the composer file
         env:
@@ -89,7 +97,11 @@ jobs:
 
     steps:
       - *checkout
-      - *setup-php
+      - name: Use PHP ${{ inputs.phpVersion }} with coverage
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.phpVersion }}
+          coverage: xdebug
       - *cache-dir
       - *cache
       - *install

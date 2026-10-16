@@ -47,6 +47,7 @@ jobs:
     uses: wakeforestuniversity/wfu-github/.github/workflows/claude-review.yml@v2
     permissions:
       contents: read
+      checks: read
       pull-requests: write
       issues: write
       id-token: write
@@ -54,7 +55,7 @@ jobs:
       claudeKey: ${{ secrets.UMC_CLAUDE_GITHUB_APP }}
 ```
 
-The check is named `review / Claude Standards Review`, which is the name to require in branch protection. It checks WFU style and code-quality rules only, never whether the code works. Drafts are skipped. A person can pass the check by adding the `standards-override` label when a finding is wrong.
+The check is named `review / Claude Standards Review`, which is the name to require in branch protection. It checks WFU style and code-quality rules only, never whether the code works. Drafts and Dependabot pull requests are skipped. A person can pass the check by adding the `standards-override` label when a finding is wrong; anyone who can label pull requests can do this, so treat the label as a reviewed decision. Adding or removing any other label keeps the last result rather than running a new review.
 
 ### Claude mentions
 

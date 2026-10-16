@@ -2,18 +2,19 @@
 
 ## 2.0.0 (2026-10-19)
 
-* Pull request checks now test the code that is actually in the pull request, and the Claude review now checks only our style rules. Before, the shared checks could reuse old copies of a repository's libraries, so new libraries never reached the tests, and the Claude review ran on every push, including drafts, and commented on everything. It now waits until a pull request is ready, leaves one comment, and passes or fails like any other check. Affects every developer opening pull requests in repositories that move to `@v2`.
+* Making pull request checks test the code that is actually in the pull request, and narrowing the Claude review to our style rules. Before, the shared checks could reuse old copies of a repository's libraries, so new libraries never reached the tests, and the Claude review ran on every push, including drafts, and commented on everything. It now waits until a pull request is ready, leaves one comment, and passes or fails like any other check. Affects every developer opening pull requests in repositories that move to `@v2`.
 * Technical details:
   * Publishing as `v2` so each repository opts in through its own pull request; `v1` stays where it is.
-  * Caching Composer's download cache instead of `vendor/`, keyed on the composer file, with restore keys.
+  * Caching Composer's download cache instead of `vendor/`, saved fresh each run and restored by composer file.
   * Running `composer install` in every job instead of only on a cache miss in Composer Setup (WP-8780).
   * Failing the testing job when a repository has a `phpunit.xml` but PHPUnit did not install.
   * Replacing the file-existence action with a shell loop and removing the unused cache-restore composite action.
   * Moving to `actions/checkout@v6` and `actions/cache@v5`, and pinning Snyk to `v1.0.0` instead of `master`.
   * Rebuilding `claude-review.yml` as a standards-only check with a fixed rubric, model and turn cap (WP-8511).
-  * Skipping drafts and unrelated label events, and canceling a running review when a newer push arrives.
+  * Skipping drafts and Dependabot, keeping the last result on other label changes, and canceling superseded runs.
   * Judging the whole pull request on every run, while marking which findings came from the latest push.
   * Returning findings as structured output, so the workflow posts one updated comment and sets the check result.
+  * Replacing that comment with a "did not complete" note whenever a run fails before it has a result.
   * Letting a person pass the check with the `standards-override` label when a finding is wrong.
   * Replacing `reviewPrompt` with `repositoryRules`, which adds rules for one repository without replacing the shared ones.
   * Setting the model and a turn cap on `claude-mention.yml` too.
