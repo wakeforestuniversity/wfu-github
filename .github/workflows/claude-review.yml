@@ -210,7 +210,7 @@ jobs:
             You are the WFU standards check for pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
             The whole pull request is `git diff ${{ steps.scope.outputs.merge_base }} ${{ github.event.pull_request.head.sha }}`.
-            ${{ steps.scope.outputs.since && format('This pull request was already reviewed at {0}, and everything up to that commit has been checked. Do exactly two things. First, re-check each earlier finding listed below at its current location (lines may have moved) and return it again with status "carried" if the violation is still there; leave it out if it was fixed. Second, look for new violations only on lines that `git diff {0} {1}` changed and that are also part of the whole pull request, and return them with status "new". Do not look for new findings anywhere else, because those lines were already reviewed. Earlier findings: {2}', steps.scope.outputs.since, github.event.pull_request.head.sha, steps.scope.outputs.previous) || 'This is the first review of this pull request, so read all of it and set status to "new" for every finding.' }}
+            ${{ steps.scope.outputs.since && format('This pull request was already reviewed at {0}, and everything up to that commit has been checked. Do exactly two things. First, re-check each earlier finding listed below at its current location (lines may have moved) and return it again with status "carried" if the violation is still there, or list it under "resolved" (file, line, rule) if it was fixed, including when it was fixed by a change in a different file. Second, look for new violations only on lines that `git diff {0} {1}` changed and that are also part of the whole pull request, and return them with status "new". Do not look for new findings anywhere else, because those lines were already reviewed. Earlier findings: {2}', steps.scope.outputs.since, github.event.pull_request.head.sha, steps.scope.outputs.previous) || 'This is the first review of this pull request, so read all of it and set status to "new" for every finding.' }}
 
             Your only job is to check the lines this pull request adds or changes against the rules below. You are not a code reviewer. Do not comment on whether the code works, on logic, bugs, performance, security, architecture, tests, or design. Do not suggest improvements the rules do not require. Do not report anything on lines the pull request did not touch. Do not report formatting that PHPCS checks mechanically (spacing, indentation, brace placement, docblock tag presence), because a separate PHPCS job enforces it. If you are unsure whether something breaks a rule, leave it out. A short list of real violations is worth more than a long list of possible ones. When the same violation appears in several places within what you are reviewing, report every place in this review, so the author can fix all of them in one push instead of finding them one round at a time.
 
@@ -230,12 +230,12 @@ jobs:
             R12 (advisory). New template rendering uses the wfu-helpers `RenderTrait` rather than a template class. Full admin page callbacks that include a template file directly are fine.
             ${{ inputs.repositoryRules && format('{0}Repository-specific rules (these block the merge):{0}{1}', fromJSON('"\n"'), inputs.repositoryRules) || '' }}
 
-            Use `git diff` and the file tools to read only what you need. Return your result as the structured output: one finding per violation with the file path, the line number in the new version of the file, the rule id, one sentence saying what to change, whether it is advisory, and its status ("new" or "carried"). The summary is one or two plain sentences for the pull request author. Return an empty findings list when nothing breaks a rule.
+            Use `git diff` and the file tools to read only what you need. Return your result as the structured output: one finding per violation with the file path, the line number in the new version of the file, the rule id, one sentence saying what to change, whether it is advisory, and its status ("new" or "carried"). The summary is one or two plain sentences for the pull request author. Return an empty findings list when nothing breaks a rule, and an empty resolved list on a first review.
           claude_args: |
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns ${{ env.CLAUDE_MAX_TURNS }}
             --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","maxItems":40,"items":{"type":"object","additionalProperties":false,"required":["file","line","rule","detail","advisory","status"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"rule":{"type":"string"},"detail":{"type":"string"},"advisory":{"type":"boolean"},"status":{"type":"string","enum":["new","carried"]}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","resolved"],"properties":{"summary":{"type":"string"},"resolved":{"type":"array","maxItems":40,"items":{"type":"object","additionalProperties":false,"required":["file","line","rule"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"rule":{"type":"string"}}}},"findings":{"type":"array","maxItems":40,"items":{"type":"object","additionalProperties":false,"required":["file","line","rule","detail","advisory","status"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"rule":{"type":"string"},"detail":{"type":"string"},"advisory":{"type":"boolean"},"status":{"type":"string","enum":["new","carried"]}}}}}}'
 
       - name: Write the review comment
         if: steps.gate.outputs.mode == 'review'
@@ -252,20 +252,24 @@ jobs:
           fi
           findings="$RUNNER_TEMP/findings.json"
           echo "$RESULT" | jq '
-            ($previous[0] // []) as $p
+            def norm: sub("^\\./"; "");
+            ($previous[0] // [] | map(.file |= norm)) as $p
             | ($reviewed | split("\n") | map(select(length > 0))) as $r
             | ($changed | split("\n") | map(select(length > 0))) as $c
-            | .findings as $returned
+            | (.findings | map(.file |= norm)) as $returned
+            | ((.resolved // []) | map(.file |= norm)) as $resolved
             | [$returned[] | . as $f
               | [$p[] | select(.file == $f.file and .rule == $f.rule)] as $match
-              | (if $f.status == "carried" and ($match | length) > 0 then "open"
+              | (if ($match | length) > 0 then "open"
                  elif $since != "" and any($r[]; . == $f.file) and (any($c[]; . == $f.file) | not) then "late"
                  else "new" end) as $kind
               | {file: $f.file, line: $f.line, rule: $f.rule, detail: $f.detail, kind: $kind,
-                 advisory: ($f.advisory or $kind == "late" or ($kind == "open" and all($match[]; .advisory)))}]
+                 advisory: (if $kind == "open" then all($match[]; .advisory) else ($f.advisory or $kind == "late") end)}]
             + (if $since == "" then [] else
                 [$p[] | . as $q
-                 | select((any($c[]; . == $q.file) | not) and (any($returned[]; .file == $q.file and .rule == $q.rule) | not))
+                 | select(any($r[]; . == $q.file) and (any($c[]; . == $q.file) | not))
+                 | select(any($returned[]; .file == $q.file and .rule == $q.rule and .line == $q.line) | not)
+                 | select(any($resolved[]; .file == $q.file and .rule == $q.rule) | not)
                  | {file, line, rule, detail, kind: "open", advisory}]
               end)' \
             --slurpfile previous "$RUNNER_TEMP/previous-findings.json" \
