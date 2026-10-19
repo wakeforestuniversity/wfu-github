@@ -83,6 +83,7 @@ jobs:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       EVENT_ACTION: ${{ github.event.action }}
       EVENT_LABEL: ${{ github.event.label.name }}
@@ -142,30 +143,43 @@ jobs:
       # from the state the last comment saved: they re-check each earlier
       # finding and look for new ones only in what changed since, so the
       # findings converge instead of moving to different lines each round.
-      # The saved commit has to be an ancestor of this one; after a force
-      # push or a rebase the review starts over from the whole pull request.
+      # The saved state is used only when it is safe to: the comment was last
+      # written by the bot, the base branch is the same, and the saved commit
+      # is still in the branch's history. Otherwise, after a force push, a
+      # rebase, a new base branch, or a hand edit of the comment, the review
+      # starts over from the whole pull request.
       - name: Work out what to review
         if: steps.gate.outputs.mode == 'review'
         id: scope
         run: |
           merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
-          state_line=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | .body | capture(\"$STATE_PREFIX(?<s>[A-Za-z0-9+/=]+)\") | .s" | head -1 || true)
-          state=$(printf '%s' "$state_line" | base64 -d 2>/dev/null || true)
-          since=$(printf '%s' "$state" | jq -r 'if (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$")) then .sha else empty end' 2>/dev/null || true)
-          round=1
-          if [ -n "$since" ]; then
-            round=$(( $(printf '%s' "$state" | jq -r '(.round | numbers | floor) // 0' 2>/dev/null || echo 0) + 1 ))
+          meta=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ((.body | capture(\"$STATE_PREFIX(?<s>[A-Za-z0-9+/=]+)\") | .s) // \"\")] | @tsv" | head -1 || true)
+          IFS=$'\t' read -r node_id author state_line <<< "$meta" || true
+          if [ -n "$state_line" ]; then
+            # shellcheck disable=SC2016
+            editor=$(gh api graphql -f query='query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login } } } }' -f id="$node_id" --jq '.data.node.editor.login // ""' 2>/dev/null || echo "unknown")
+            if [ -n "$editor" ] && [ "$editor" != "${author%\[bot\]}" ] && [ "$editor" != "$author" ]; then
+              echo "::warning::The review comment was last edited by $editor, not the bot, so its saved state is ignored."
+              state_line=""
+            fi
           fi
-          if [ -n "$since" ] && ! git merge-base --is-ancestor "$since" "$HEAD_SHA" 2>/dev/null; then
+          state=$(printf '%s' "$state_line" | base64 -d 2>/dev/null || true)
+          round=$(( $(printf '%s' "$state" | jq -r '(.round | numbers | floor | if . < 0 or . > 1000 then 0 else . end) // 0' 2>/dev/null || echo 0) + 1 ))
+          since=$(printf '%s' "$state" | jq -r 'if (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$")) then .sha else empty end' 2>/dev/null || true)
+          saved_base_ref=$(printf '%s' "$state" | jq -r '.base_ref // empty' 2>/dev/null || true)
+          saved_merge_base=$(printf '%s' "$state" | jq -r 'if (.merge_base | type) == "string" and (.merge_base | test("^[0-9a-f]{40}$")) then .merge_base else empty end' 2>/dev/null || true)
+          if [ -n "$since" ] && { [ "$saved_base_ref" != "$BASE_REF" ] || [ -z "$saved_merge_base" ] \
+            || ! git merge-base --is-ancestor "$saved_merge_base" "$merge_base" 2>/dev/null \
+            || ! git merge-base --is-ancestor "$since" "$HEAD_SHA" 2>/dev/null; }; then
             since=""
           fi
           if [ -n "$since" ]; then
-            printf '%s' "$state" | jq -c '[.findings[]? | {file: (.file | tostring), line: (.line | tonumber? // 0), rule: (.rule | tostring), advisory: (.advisory == true)}]' > "$RUNNER_TEMP/previous-findings.json" 2>/dev/null \
+            printf '%s' "$state" | jq -c '[.findings[]? | {file: (.file | tostring), line: (.line | tonumber? // 0), rule: (.rule | tostring), detail: ((.detail // "") | tostring | .[:300]), advisory: (.advisory == true)}]' > "$RUNNER_TEMP/previous-findings.json" 2>/dev/null \
               || echo '[]' > "$RUNNER_TEMP/previous-findings.json"
-            git diff --name-only "$merge_base" "$since" > "$RUNNER_TEMP/reviewed-files.txt"
-            git diff --name-only "$since" "$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --no-renames --name-only "$merge_base" "$since" > "$RUNNER_TEMP/reviewed-files.txt"
+            git diff --no-renames --name-only "$since" "$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
             echo "previous=$(cat "$RUNNER_TEMP/previous-findings.json")" >> "$GITHUB_OUTPUT"
           else
             echo '[]' > "$RUNNER_TEMP/previous-findings.json"
@@ -230,6 +244,7 @@ jobs:
           RESULT: ${{ steps.claude.outputs.structured_output }}
           SINCE: ${{ steps.scope.outputs.since }}
           ROUND: ${{ steps.scope.outputs.round }}
+          MERGE_BASE: ${{ steps.scope.outputs.merge_base }}
         run: |
           if [ -z "$RESULT" ] || ! echo "$RESULT" | jq -e '.findings' > /dev/null 2>&1; then
             echo "::error::The review did not return a result. Check the Claude step log; a dead key or a spending cap shows up there."
@@ -240,13 +255,19 @@ jobs:
             ($previous[0] // []) as $p
             | ($reviewed | split("\n") | map(select(length > 0))) as $r
             | ($changed | split("\n") | map(select(length > 0))) as $c
-            | [.findings[] | . as $f
+            | .findings as $returned
+            | [$returned[] | . as $f
               | [$p[] | select(.file == $f.file and .rule == $f.rule)] as $match
               | (if $f.status == "carried" and ($match | length) > 0 then "open"
                  elif $since != "" and any($r[]; . == $f.file) and (any($c[]; . == $f.file) | not) then "late"
                  else "new" end) as $kind
               | {file: $f.file, line: $f.line, rule: $f.rule, detail: $f.detail, kind: $kind,
-                 advisory: ($f.advisory or $kind == "late" or ($kind == "open" and all($match[]; .advisory)))}]' \
+                 advisory: ($f.advisory or $kind == "late" or ($kind == "open" and all($match[]; .advisory)))}]
+            + (if $since == "" then [] else
+                [$p[] | . as $q
+                 | select((any($c[]; . == $q.file) | not) and (any($returned[]; .file == $q.file and .rule == $q.rule) | not))
+                 | {file, line, rule, detail, kind: "open", advisory}]
+              end)' \
             --slurpfile previous "$RUNNER_TEMP/previous-findings.json" \
             --rawfile reviewed "$RUNNER_TEMP/reviewed-files.txt" \
             --rawfile changed "$RUNNER_TEMP/changed-files.txt" \
@@ -254,7 +275,10 @@ jobs:
           blocking=$(jq '[.[] | select(.advisory | not)] | length' "$findings")
           advisory=$(jq '[.[] | select(.advisory)] | length' "$findings")
           if [ "$blocking" -gt 0 ]; then title="needs changes ($blocking to fix)"; else title="passed"; fi
-          state=$(jq -c --arg sha "$HEAD_SHA" --argjson round "$ROUND" '{sha: $sha, round: $round, findings: [.[] | {file, line, rule, advisory}]}' "$findings" | base64 -w0)
+          returned=$(echo "$RESULT" | jq '.findings | length')
+          state=$(jq -c --arg sha "$HEAD_SHA" --arg base_ref "$BASE_REF" --arg merge_base "$MERGE_BASE" --argjson round "$ROUND" --argjson capped "$([ "$returned" -ge 40 ] && echo true || echo false)" \
+            '{sha: (if $capped then null else $sha end), base_ref: $base_ref, merge_base: $merge_base, round: $round, findings: [.[] | {file, line, rule, detail: (.detail | .[:300]), advisory}]}' "$findings" | base64 -w0)
+          draft="$RUNNER_TEMP/standards-comment.draft"
           {
             echo "$COMMENT_MARKER"
             echo "### Claude standards review: $title"
@@ -271,6 +295,10 @@ jobs:
                 echo
               fi
             fi
+            if [ "$returned" -ge 40 ]; then
+              echo "This review reached its limit of 40 findings, so there may be more. The next push gets a full review."
+              echo
+            fi
             if [ "$blocking" -gt 0 ] && [ "$ROUND" -ge "$ROUND_LIMIT" ]; then
               echo "This is review round $ROUND. If fixes keep turning up new findings, it may be worth stepping back from the approach before pushing again, or asking a person whether these rules fit this change."
               echo
@@ -278,7 +306,8 @@ jobs:
             echo "<sub>Reviewed ${HEAD_SHA:0:7}, round $ROUND. This check looks only at WFU style and code-quality conventions, not at whether the code works. Later rounds check only what changed since the last review, and a late finding on code an earlier round already passed is advisory. If a finding is wrong, a person can add the \`$OVERRIDE_LABEL\` label to pass the check.</sub>"
             echo
             echo "<!-- $STATE_PREFIX$state -->"
-          } > "$RUNNER_TEMP/standards-comment.md"
+          } > "$draft"
+          mv "$draft" "$RUNNER_TEMP/standards-comment.md"
           echo "blocking=$blocking" >> "$GITHUB_OUTPUT"
 
       # Runs after any failure too, so a red check never sits under an old
