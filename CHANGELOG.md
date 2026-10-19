@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.1.0 (2026-10-19)
+
+* Making the Claude standards review settle down instead of finding something new every time a pull request is updated. After the first review, it now checks only what changed since the last one and re-checks the problems it already reported, so fixing one finding no longer turns up a different one on code it already passed. After three rounds it suggests stepping back, and it keeps optional suggestions short. Affects every developer opening pull requests in repositories on `@v2`.
+* Technical details:
+  * Saving the reviewed commit, round number and finding locations in a hidden line of the review comment.
+  * Re-checking saved findings as "carried" and limiting new findings to lines changed since the saved commit.
+  * Treating a new finding as advisory when it is in a file the last round reviewed and nothing has changed it since.
+  * Starting over with a full review after a force push or rebase, or when the saved state cannot be read.
+  * Keeping the saved state when a run fails before it produces a result.
+  * Asking the model to report every place a repeated violation appears in one review.
+  * Adding a step-back note to failing comments from round three on (`ROUND_LIMIT`).
+  * Showing at most five advisory findings and counting the rest (`ADVISORY_LIMIT`).
+  * Replacing the `new` boolean in the structured output with a `status` of `new` or `carried` (WP-8874).
+
 ## 2.0.0 (2026-10-19)
 
 * Making pull request checks test the code that is actually in the pull request, and narrowing the Claude review to our style rules. Before, the shared checks could reuse old copies of a repository's libraries, so new libraries never reached the tests, and the Claude review ran on every push, including drafts, and commented on everything. It now waits until a pull request is ready, leaves one comment, and passes or fails like any other check. Affects every developer opening pull requests in repositories that move to `@v2`.

@@ -43,6 +43,15 @@ env:
   CLAUDE_MAX_TURNS: '20'
   OVERRIDE_LABEL: standards-override
   COMMENT_MARKER: '<!-- wfu-claude-standards-review -->'
+  # The review comment carries its own state in a hidden line: the commit it
+  # reviewed, the round number, and where each finding was. The next run
+  # reads it back so it can check only what changed.
+  STATE_PREFIX: 'wfu-claude-standards-state: '
+  # From this round on, a failing comment asks the author to step back rather
+  # than keep pushing fixes one finding at a time.
+  ROUND_LIMIT: '3'
+  # Advisory findings shown in the comment before the rest are summarized.
+  ADVISORY_LIMIT: '5'
 
 jobs:
   review:
@@ -75,7 +84,6 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      BEFORE_SHA: ${{ github.event.before }}
       EVENT_ACTION: ${{ github.event.action }}
       EVENT_LABEL: ${{ github.event.label.name }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -130,22 +138,47 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      # The verdict always covers the whole pull request, so a later push
-      # cannot turn the check green while an earlier violation is still there.
-      # The commits since the last reviewed push are named separately so the
-      # comment can say which findings are new.
+      # The first review reads the whole pull request. Later reviews start
+      # from the state the last comment saved: they re-check each earlier
+      # finding and look for new ones only in what changed since, so the
+      # findings converge instead of moving to different lines each round.
+      # The saved commit has to be an ancestor of this one; after a force
+      # push or a rebase the review starts over from the whole pull request.
       - name: Work out what to review
         if: steps.gate.outputs.mode == 'review'
         id: scope
         run: |
           merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
-          since=""
-          if [ "$EVENT_ACTION" = "synchronize" ] && git merge-base --is-ancestor "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null; then
-            since="$BEFORE_SHA"
-          fi
           echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
-          echo "since=$since" >> "$GITHUB_OUTPUT"
-          git diff --stat "$merge_base" "$HEAD_SHA"
+          state_line=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | .body | capture(\"$STATE_PREFIX(?<s>[A-Za-z0-9+/=]+)\") | .s" | head -1 || true)
+          state=$(printf '%s' "$state_line" | base64 -d 2>/dev/null || true)
+          since=$(printf '%s' "$state" | jq -r 'if (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$")) then .sha else empty end' 2>/dev/null || true)
+          round=1
+          if [ -n "$since" ]; then
+            round=$(( $(printf '%s' "$state" | jq -r '(.round | numbers | floor) // 0' 2>/dev/null || echo 0) + 1 ))
+          fi
+          if [ -n "$since" ] && ! git merge-base --is-ancestor "$since" "$HEAD_SHA" 2>/dev/null; then
+            since=""
+          fi
+          if [ -n "$since" ]; then
+            printf '%s' "$state" | jq -c '[.findings[]? | {file: (.file | tostring), line: (.line | tonumber? // 0), rule: (.rule | tostring), advisory: (.advisory == true)}]' > "$RUNNER_TEMP/previous-findings.json" 2>/dev/null \
+              || echo '[]' > "$RUNNER_TEMP/previous-findings.json"
+            git diff --name-only "$merge_base" "$since" > "$RUNNER_TEMP/reviewed-files.txt"
+            git diff --name-only "$since" "$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            echo "previous=$(cat "$RUNNER_TEMP/previous-findings.json")" >> "$GITHUB_OUTPUT"
+          else
+            echo '[]' > "$RUNNER_TEMP/previous-findings.json"
+            : > "$RUNNER_TEMP/reviewed-files.txt"
+            : > "$RUNNER_TEMP/changed-files.txt"
+          fi
+          {
+            echo "since=$since"
+            echo "round=$round"
+            echo "state_line=$state_line"
+          } >> "$GITHUB_OUTPUT"
+          echo "Round $round${since:+, reviewing changes since ${since:0:7}}."
+          git diff --stat "${since:-$merge_base}" "$HEAD_SHA"
 
       - name: Run the Claude standards review
         if: steps.gate.outputs.mode == 'review'
@@ -163,9 +196,9 @@ jobs:
             You are the WFU standards check for pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
             The whole pull request is `git diff ${{ steps.scope.outputs.merge_base }} ${{ github.event.pull_request.head.sha }}`.
-            ${{ steps.scope.outputs.since && format('The commits pushed since the last review are `git diff {0} {1}`. Set "new" to true only for findings on lines changed in that range.', steps.scope.outputs.since, github.event.pull_request.head.sha) || 'This is the first review of this pull request, so set "new" to true for every finding.' }}
+            ${{ steps.scope.outputs.since && format('This pull request was already reviewed at {0}, and everything up to that commit has been checked. Do exactly two things. First, re-check each earlier finding listed below at its current location (lines may have moved) and return it again with status "carried" if the violation is still there; leave it out if it was fixed. Second, look for new violations only on lines that `git diff {0} {1}` changed and that are also part of the whole pull request, and return them with status "new". Do not look for new findings anywhere else, because those lines were already reviewed. Earlier findings: {2}', steps.scope.outputs.since, github.event.pull_request.head.sha, steps.scope.outputs.previous) || 'This is the first review of this pull request, so read all of it and set status to "new" for every finding.' }}
 
-            Your only job is to check the lines this pull request adds or changes against the rules below. You are not a code reviewer. Do not comment on whether the code works, on logic, bugs, performance, security, architecture, tests, or design. Do not suggest improvements the rules do not require. Do not report anything on lines the pull request did not touch. Do not report formatting that PHPCS checks mechanically (spacing, indentation, brace placement, docblock tag presence), because a separate PHPCS job enforces it. If you are unsure whether something breaks a rule, leave it out. A short list of real violations is worth more than a long list of possible ones.
+            Your only job is to check the lines this pull request adds or changes against the rules below. You are not a code reviewer. Do not comment on whether the code works, on logic, bugs, performance, security, architecture, tests, or design. Do not suggest improvements the rules do not require. Do not report anything on lines the pull request did not touch. Do not report formatting that PHPCS checks mechanically (spacing, indentation, brace placement, docblock tag presence), because a separate PHPCS job enforces it. If you are unsure whether something breaks a rule, leave it out. A short list of real violations is worth more than a long list of possible ones. When the same violation appears in several places within what you are reviewing, report every place in this review, so the author can fix all of them in one push instead of finding them one round at a time.
 
             Rules (every rule blocks the merge unless it says advisory):
 
@@ -183,26 +216,45 @@ jobs:
             R12 (advisory). New template rendering uses the wfu-helpers `RenderTrait` rather than a template class. Full admin page callbacks that include a template file directly are fine.
             ${{ inputs.repositoryRules && format('{0}Repository-specific rules (these block the merge):{0}{1}', fromJSON('"\n"'), inputs.repositoryRules) || '' }}
 
-            Use `git diff` and the file tools to read only what you need. Return your result as the structured output: one finding per violation with the file path, the line number in the new version of the file, the rule id, one sentence saying what to change, whether it is advisory, and whether it is new. The summary is one or two plain sentences for the pull request author. Return an empty findings list when nothing breaks a rule.
+            Use `git diff` and the file tools to read only what you need. Return your result as the structured output: one finding per violation with the file path, the line number in the new version of the file, the rule id, one sentence saying what to change, whether it is advisory, and its status ("new" or "carried"). The summary is one or two plain sentences for the pull request author. Return an empty findings list when nothing breaks a rule.
           claude_args: |
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns ${{ env.CLAUDE_MAX_TURNS }}
             --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","maxItems":40,"items":{"type":"object","additionalProperties":false,"required":["file","line","rule","detail","advisory","new"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"rule":{"type":"string"},"detail":{"type":"string"},"advisory":{"type":"boolean"},"new":{"type":"boolean"}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","maxItems":40,"items":{"type":"object","additionalProperties":false,"required":["file","line","rule","detail","advisory","status"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"rule":{"type":"string"},"detail":{"type":"string"},"advisory":{"type":"boolean"},"status":{"type":"string","enum":["new","carried"]}}}}}}'
 
       - name: Write the review comment
         if: steps.gate.outputs.mode == 'review'
         id: verdict
         env:
           RESULT: ${{ steps.claude.outputs.structured_output }}
+          SINCE: ${{ steps.scope.outputs.since }}
+          ROUND: ${{ steps.scope.outputs.round }}
         run: |
           if [ -z "$RESULT" ] || ! echo "$RESULT" | jq -e '.findings' > /dev/null 2>&1; then
             echo "::error::The review did not return a result. Check the Claude step log; a dead key or a spending cap shows up there."
             exit 1
           fi
-          blocking=$(echo "$RESULT" | jq '[.findings[] | select(.advisory | not)] | length')
-          advisory=$(echo "$RESULT" | jq '[.findings[] | select(.advisory)] | length')
+          findings="$RUNNER_TEMP/findings.json"
+          echo "$RESULT" | jq '
+            ($previous[0] // []) as $p
+            | ($reviewed | split("\n") | map(select(length > 0))) as $r
+            | ($changed | split("\n") | map(select(length > 0))) as $c
+            | [.findings[] | . as $f
+              | [$p[] | select(.file == $f.file and .rule == $f.rule)] as $match
+              | (if $f.status == "carried" and ($match | length) > 0 then "open"
+                 elif $since != "" and any($r[]; . == $f.file) and (any($c[]; . == $f.file) | not) then "late"
+                 else "new" end) as $kind
+              | {file: $f.file, line: $f.line, rule: $f.rule, detail: $f.detail, kind: $kind,
+                 advisory: ($f.advisory or $kind == "late" or ($kind == "open" and all($match[]; .advisory)))}]' \
+            --slurpfile previous "$RUNNER_TEMP/previous-findings.json" \
+            --rawfile reviewed "$RUNNER_TEMP/reviewed-files.txt" \
+            --rawfile changed "$RUNNER_TEMP/changed-files.txt" \
+            --arg since "$SINCE" > "$findings"
+          blocking=$(jq '[.[] | select(.advisory | not)] | length' "$findings")
+          advisory=$(jq '[.[] | select(.advisory)] | length' "$findings")
           if [ "$blocking" -gt 0 ]; then title="needs changes ($blocking to fix)"; else title="passed"; fi
+          state=$(jq -c --arg sha "$HEAD_SHA" --argjson round "$ROUND" '{sha: $sha, round: $round, findings: [.[] | {file, line, rule, advisory}]}' "$findings" | base64 -w0)
           {
             echo "$COMMENT_MARKER"
             echo "### Claude standards review: $title"
@@ -212,10 +264,20 @@ jobs:
             if [ "$((blocking + advisory))" -gt 0 ]; then
               echo "| | File | Rule | What to change |"
               echo "|---|---|---|---|"
-              echo "$RESULT" | jq -r '.findings | sort_by(.advisory, .file, .line)[] | "| \(if .advisory then "advisory" elif .new then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"'
+              jq -r --argjson limit "$ADVISORY_LIMIT" '([.[] | select(.advisory | not)] | sort_by(.file, .line)) + ([.[] | select(.advisory)] | sort_by(.file, .line) | .[:$limit]) | .[] | "| \(if .kind == "late" then "advisory, late" elif .advisory then "advisory" elif .kind == "new" then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"' "$findings"
+              echo
+              if [ "$advisory" -gt "$ADVISORY_LIMIT" ]; then
+                echo "$((advisory - ADVISORY_LIMIT)) more advisory findings are not shown. None of them block the merge."
+                echo
+              fi
+            fi
+            if [ "$blocking" -gt 0 ] && [ "$ROUND" -ge "$ROUND_LIMIT" ]; then
+              echo "This is review round $ROUND. If fixes keep turning up new findings, it may be worth stepping back from the approach before pushing again, or asking a person whether these rules fit this change."
               echo
             fi
-            echo "<sub>Reviewed ${HEAD_SHA:0:7}. This check looks only at WFU style and code-quality conventions, not at whether the code works. If a finding is wrong, a person can add the \`$OVERRIDE_LABEL\` label to pass the check.</sub>"
+            echo "<sub>Reviewed ${HEAD_SHA:0:7}, round $ROUND. This check looks only at WFU style and code-quality conventions, not at whether the code works. Later rounds check only what changed since the last review, and a late finding on code an earlier round already passed is advisory. If a finding is wrong, a person can add the \`$OVERRIDE_LABEL\` label to pass the check.</sub>"
+            echo
+            echo "<!-- $STATE_PREFIX$state -->"
           } > "$RUNNER_TEMP/standards-comment.md"
           echo "blocking=$blocking" >> "$GITHUB_OUTPUT"
 
@@ -224,11 +286,16 @@ jobs:
       # checkout, so a file committed in the pull request cannot stand in for it.
       - name: Post or update the review comment
         if: ${{ !cancelled() && steps.gate.outputs.mode != 'mirror' }}
+        env:
+          STATE_LINE: ${{ steps.scope.outputs.state_line }}
         run: |
           comment="$RUNNER_TEMP/standards-comment.md"
           if [ ! -f "$comment" ]; then
             printf '%s\n%s\n\n%s\n' "$COMMENT_MARKER" "### Claude standards review: did not complete" \
               "The review stopped before it produced a result, so this check is failing. The run log has the details: $RUN_URL" > "$comment"
+            if [ -n "$STATE_LINE" ]; then
+              printf '\n<!-- %s%s -->\n' "$STATE_PREFIX" "$STATE_LINE" >> "$comment"
+            fi
           fi
           existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
             --jq "[.[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\")))][0].id // empty" | head -1)
