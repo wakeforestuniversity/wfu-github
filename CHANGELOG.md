@@ -7,12 +7,15 @@
   * Saving the reviewed commit, round number and finding locations in a hidden line of the review comment.
   * Re-checking saved findings as "carried" and limiting new findings to lines changed since the saved commit.
   * Treating a new finding as advisory when it is in a file the last round reviewed and nothing has changed it since.
-  * Starting over with a full review after a force push or rebase, or when the saved state cannot be read.
+  * Starting over with a full review after a force push, a rebase, a new base branch, or a 40-finding round.
+  * Ignoring the saved state when anyone but the bot edited the comment, or when it cannot be read.
+  * Keeping an earlier finding in an unchanged file open unless the model lists it as resolved.
+  * Keeping an earlier finding's blocking status whenever a new finding matches it on file and rule.
   * Keeping the saved state when a run fails before it produces a result.
   * Asking the model to report every place a repeated violation appears in one review.
   * Adding a step-back note to failing comments from round three on (`ROUND_LIMIT`).
   * Showing at most five advisory findings and counting the rest (`ADVISORY_LIMIT`).
-  * Replacing the `new` boolean in the structured output with a `status` of `new` or `carried` (WP-8874).
+  * Replacing the `new` boolean with a `status` of `new` or `carried`, and adding a `resolved` list (WP-8874).
 
 ## 2.0.0 (2026-10-19)
 
