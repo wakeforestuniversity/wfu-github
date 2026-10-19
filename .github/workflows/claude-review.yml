@@ -264,12 +264,14 @@ jobs:
                  elif $since != "" and any($r[]; . == $f.file) and (any($c[]; . == $f.file) | not) then "late"
                  else "new" end) as $kind
               | {file: $f.file, line: $f.line, rule: $f.rule, detail: $f.detail, kind: $kind,
-                 advisory: (if $kind == "open" then all($match[]; .advisory) else ($f.advisory or $kind == "late") end)}]
+                 advisory: (if $kind != "open" then ($f.advisory or $kind == "late")
+                   elif any($c[]; . == $f.file) then ($f.advisory and all($match[]; .advisory))
+                   else all($match[]; .advisory) end)}]
             + (if $since == "" then [] else
                 [$p[] | . as $q
                  | select(any($r[]; . == $q.file) and (any($c[]; . == $q.file) | not))
                  | select(any($returned[]; .file == $q.file and .rule == $q.rule and .line == $q.line) | not)
-                 | select(any($resolved[]; .file == $q.file and .rule == $q.rule) | not)
+                 | select(any($resolved[]; .file == $q.file and .rule == $q.rule and .line == $q.line) | not)
                  | {file, line, rule, detail, kind: "open", advisory}]
               end)' \
             --slurpfile previous "$RUNNER_TEMP/previous-findings.json" \
