@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.2.0 (2026-10-20)
+## 2.2.0 (2026-10-21)
 
 * Making the standards override apply only to the code a person actually looked at. The override label used to stay on through later pushes, letting new commits merge unreviewed, and adding it erased the findings. Now the next push removes the label and reviews the new code, the findings stay visible while the label is on, and taking the label off brings the last review back for free. Affects every developer opening pull requests in repositories on `@v2`.
 * Technical details:
@@ -9,9 +9,9 @@
   * Folding the last review into the overridden comment instead of replacing it.
   * Reusing the last review's comment and result when it covers the same head commit and the event is not a push.
   * Trusting a saved review, for folding or reuse, only when the bot last edited the comment.
-  * Recording the overridden commit in the comment, so a re-run of that commit's push keeps the label.
-  * Doing nothing in a run whose commit is no longer the pull request's head.
-  * Escaping comment markers in the summary and findings, and reading the last saved state, not the first.
+  * Recording the overridden commit, and honoring the label only for that commit or a new override label event.
+  * Failing, without reviewing or posting, in a run whose commit is no longer the pull request's head.
+  * Escaping comment markers in Claude's text and matching only the full hidden state line, taking the last one.
   * Continuing the review with a warning when the label cannot be removed.
   * Reporting a rule-breaking name once where it is introduced, instead of once per use, so the fix count is not inflated.
   * Making a new Hungarian name advisory under R4 when the surrounding file uses Hungarian names throughout.

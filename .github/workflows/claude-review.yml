@@ -114,9 +114,13 @@ jobs:
           override_prefix='wfu-claude-standards-override: '
           live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
           if [ "$live_head" != "$HEAD_SHA" ]; then
+            sleep 10
+            live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          fi
+          if [ "$live_head" != "$HEAD_SHA" ]; then
             echo "mode=stale" >> "$GITHUB_OUTPUT"
-            echo "This run is for ${HEAD_SHA:0:7}, but the pull request is now at ${live_head:0:7}, so it does nothing."
-            exit 0
+            echo "::error::This run is for ${HEAD_SHA:0:7}, but the pull request is now at ${live_head:0:7}, so it does not review. The run for the current commit sets the check."
+            exit 1
           fi
           comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
             --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | .id" | head -1 || true)
@@ -132,21 +136,18 @@ jobs:
               : > "$existing"
             fi
           fi
-          overridden_sha=$(grep -oE "${override_prefix}[0-9a-f]{40}" "$existing" | tail -1 | sed "s|^$override_prefix||" || true)
-          if grep -qxF "$folded_open" "$existing"; then
-            sed -n "\|^$folded_open\$|,\|^</details>\$|p" "$existing" | sed '1,2d' | sed '$d' | sed '$d' > "$saved"
+          overridden_sha=$(grep -oE "<!-- ${override_prefix}[0-9a-f]{40} -->" "$existing" | tail -1 | sed -E "s|^<!-- $override_prefix([0-9a-f]{40}) -->$|\1|" || true)
+          open_line=$(grep -nxF "$folded_open" "$existing" | head -1 | cut -d: -f1 || true)
+          close_line=$(grep -nx '</details>' "$existing" | tail -1 | cut -d: -f1 || true)
+          if [ -n "$open_line" ] && [ -n "$close_line" ] && [ "$close_line" -gt "$open_line" ]; then
+            sed -n "$((open_line + 2)),$((close_line - 2))p" "$existing" > "$saved"
           elif grep -qE '^### Claude standards review: (passed|needs changes)' "$existing"; then
             sed '1d' "$existing" > "$saved"
           else
             : > "$saved"
           fi
           if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qxF "$OVERRIDE_LABEL"; then
-            if [ "$EVENT_ACTION" = "synchronize" ] && [ "$overridden_sha" != "$HEAD_SHA" ]; then
-              gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$OVERRIDE_LABEL" > /dev/null \
-                || echo "::warning::Could not remove the $OVERRIDE_LABEL label; reviewing ${HEAD_SHA:0:7} anyway."
-              echo "::notice::New commits were pushed after the $OVERRIDE_LABEL label was added, so the label was removed and ${HEAD_SHA:0:7} is reviewed."
-              echo "override_cleared=true" >> "$GITHUB_OUTPUT"
-            else
+            if { [ "$EVENT_ACTION" = "labeled" ] && [ "$EVENT_LABEL" = "$OVERRIDE_LABEL" ]; } || [ "$overridden_sha" = "$HEAD_SHA" ]; then
               echo "mode=override" >> "$GITHUB_OUTPUT"
               {
                 echo "$COMMENT_MARKER"
@@ -166,10 +167,17 @@ jobs:
               } > "$comment"
               exit 0
             fi
-          elif [ "$EVENT_ACTION" = "synchronize" ] && [ -n "$overridden_sha" ] && [ "$overridden_sha" != "$HEAD_SHA" ]; then
+            gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$OVERRIDE_LABEL" > /dev/null 2>&1 || true
+            if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qxF "$OVERRIDE_LABEL"; then
+              echo "::warning::Could not remove the $OVERRIDE_LABEL label; reviewing ${HEAD_SHA:0:7} anyway."
+            else
+              echo "::notice::The $OVERRIDE_LABEL label was added for an earlier commit, so it was removed and ${HEAD_SHA:0:7} is reviewed."
+              echo "override_cleared=true" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ -n "$overridden_sha" ] && [ "$overridden_sha" != "$HEAD_SHA" ]; then
             echo "override_cleared=true" >> "$GITHUB_OUTPUT"
           fi
-          state=$(grep -oE "${STATE_PREFIX}[A-Za-z0-9+/=]+" "$saved" | tail -1 | sed "s|^$STATE_PREFIX||" | base64 -d 2>/dev/null || true)
+          state=$(grep -oE "<!-- ${STATE_PREFIX}[A-Za-z0-9+/=]+ -->" "$saved" | tail -1 | sed -E "s|^<!-- $STATE_PREFIX([A-Za-z0-9+/=]+) -->$|\1|" | base64 -d 2>/dev/null || true)
           if [ "$EVENT_ACTION" != "synchronize" ] && [ -s "$saved" ] && [ -n "$state" ] \
             && [ "$(printf '%s' "$state" | jq -r '.sha // empty' 2>/dev/null)" = "$HEAD_SHA" ]; then
             echo "mode=reuse" >> "$GITHUB_OUTPUT"
@@ -230,7 +238,7 @@ jobs:
           merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
           meta=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ([.body | match(\"$STATE_PREFIX([A-Za-z0-9+/=]+)\"; \"g\") | .captures[0].string] | last // \"\")] | @tsv" | head -1 || true)
+            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ([.body | match(\"<!-- $STATE_PREFIX([A-Za-z0-9+/=]+) -->\"; \"g\") | .captures[0].string] | last // \"\")] | @tsv" | head -1 || true)
           IFS=$'\t' read -r node_id author state_line <<< "$meta" || true
           if [ -n "$state_line" ]; then
             # shellcheck disable=SC2016
@@ -382,7 +390,7 @@ jobs:
               echo
             fi
             if [ "$OVERRIDE_CLEARED" = "true" ]; then
-              echo "The \`$OVERRIDE_LABEL\` label was removed because new commits were pushed after it was added. Add it again if a finding on this commit is wrong."
+              echo "The \`$OVERRIDE_LABEL\` label covered an earlier commit, so it no longer applies and this commit was reviewed. Add it again if a finding on this commit is wrong."
               echo
             fi
             if [ "$blocking" -gt 0 ] && [ "$ROUND" -ge "$ROUND_LIMIT" ]; then
