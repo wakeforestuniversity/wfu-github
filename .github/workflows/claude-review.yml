@@ -89,18 +89,21 @@ jobs:
       EVENT_LABEL: ${{ github.event.label.name }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      # Four outcomes. The override label, read live rather than from the
-      # event payload so a re-run sees it, passes without a review, but only
-      # for the commit it was added on: a push removes the label and reviews
-      # the new commit, so an override never carries over to code nobody
-      # looked at. The label is removed with the job's own token, which does
-      # not start another run. While overridden, the last review is kept
-      # folded inside the comment. When the last real review already covers
-      # this exact commit (the label was removed, the pull request was
-      # reopened, or two events arrived for one push), that review is put
-      # back and its result reused instead of paying for a new one. A label
-      # change that is not the override keeps the last result. Anything else
-      # reviews.
+      # Five outcomes. A run for a commit that is no longer the head of the
+      # pull request, such as a re-run of an old push, does nothing. The
+      # override label, read live rather than from the event payload so a
+      # re-run sees it, passes without a review, but only for the commit it
+      # was added on: the comment records that commit, and a push of a
+      # different commit removes the label and reviews it, so an override
+      # never carries over to code nobody looked at. The label is removed
+      # with the job's own token, which does not start another run. While
+      # overridden, the last review is kept folded inside the comment. When
+      # the last real review already covers this exact commit (the label was
+      # removed, the pull request was reopened, or two events arrived for one
+      # push), that review is put back and its result reused instead of
+      # paying for a new one. Saved reviews are trusted only when the bot was
+      # the last to edit the comment. A label change that is not the override
+      # keeps the last result. Anything else reviews.
       - name: Decide whether to review
         id: gate
         run: |
@@ -108,8 +111,28 @@ jobs:
           existing="$RUNNER_TEMP/existing-comment.md"
           saved="$RUNNER_TEMP/saved-review.md"
           folded_open='<details><summary>Last review before the override</summary>'
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq "[.[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\")))][0].body // empty" > "$existing" || : > "$existing"
+          override_prefix='wfu-claude-standards-override: '
+          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [ "$live_head" != "$HEAD_SHA" ]; then
+            echo "mode=stale" >> "$GITHUB_OUTPUT"
+            echo "This run is for ${HEAD_SHA:0:7}, but the pull request is now at ${live_head:0:7}, so it does nothing."
+            exit 0
+          fi
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | .id" | head -1 || true)
+          : > "$existing"
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" --jq '.body' > "$existing"
+            node_id=$(gh api "repos/$REPO/issues/comments/$comment_id" --jq '.node_id')
+            author=$(gh api "repos/$REPO/issues/comments/$comment_id" --jq '.user.login')
+            # shellcheck disable=SC2016
+            editor=$(gh api graphql -f query='query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login } } } }' -f id="$node_id" --jq '.data.node.editor.login // ""' 2>/dev/null || echo "unknown")
+            if [ -n "$editor" ] && [ "$editor" != "${author%\[bot\]}" ] && [ "$editor" != "$author" ]; then
+              echo "::warning::The review comment was last edited by $editor, not the bot, so its saved review is not trusted."
+              : > "$existing"
+            fi
+          fi
+          overridden_sha=$(grep -oE "${override_prefix}[0-9a-f]{40}" "$existing" | tail -1 | sed "s|^$override_prefix||" || true)
           if grep -qxF "$folded_open" "$existing"; then
             sed -n "\|^$folded_open\$|,\|^</details>\$|p" "$existing" | sed '1,2d' | sed '$d' | sed '$d' > "$saved"
           elif grep -qE '^### Claude standards review: (passed|needs changes)' "$existing"; then
@@ -118,8 +141,9 @@ jobs:
             : > "$saved"
           fi
           if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qxF "$OVERRIDE_LABEL"; then
-            if [ "$EVENT_ACTION" = "synchronize" ]; then
-              gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$OVERRIDE_LABEL" > /dev/null
+            if [ "$EVENT_ACTION" = "synchronize" ] && [ "$overridden_sha" != "$HEAD_SHA" ]; then
+              gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$OVERRIDE_LABEL" > /dev/null \
+                || echo "::warning::Could not remove the $OVERRIDE_LABEL label; reviewing ${HEAD_SHA:0:7} anyway."
               echo "::notice::New commits were pushed after the $OVERRIDE_LABEL label was added, so the label was removed and ${HEAD_SHA:0:7} is reviewed."
               echo "override_cleared=true" >> "$GITHUB_OUTPUT"
             else
@@ -137,22 +161,15 @@ jobs:
                   echo
                   echo "</details>"
                 fi
+                echo
+                echo "<!-- $override_prefix$HEAD_SHA -->"
               } > "$comment"
               exit 0
             fi
+          elif [ "$EVENT_ACTION" = "synchronize" ] && [ -n "$overridden_sha" ] && [ "$overridden_sha" != "$HEAD_SHA" ]; then
+            echo "override_cleared=true" >> "$GITHUB_OUTPUT"
           fi
-          state=$(grep -oE "${STATE_PREFIX}[A-Za-z0-9+/=]+" "$saved" | head -1 | sed "s|^$STATE_PREFIX||" | base64 -d 2>/dev/null || true)
-          if [ -n "$state" ]; then
-            meta=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-              --jq "[.[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\")))][0] | [.node_id, .user.login] | @tsv" | head -1 || true)
-            IFS=$'\t' read -r node_id author <<< "$meta" || true
-            # shellcheck disable=SC2016
-            editor=$(gh api graphql -f query='query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login } } } }' -f id="$node_id" --jq '.data.node.editor.login // ""' 2>/dev/null || echo "unknown")
-            if [ -n "$editor" ] && [ "$editor" != "${author%\[bot\]}" ] && [ "$editor" != "$author" ]; then
-              echo "::warning::The review comment was last edited by $editor, not the bot, so its saved result is not reused."
-              state=""
-            fi
-          fi
+          state=$(grep -oE "${STATE_PREFIX}[A-Za-z0-9+/=]+" "$saved" | tail -1 | sed "s|^$STATE_PREFIX||" | base64 -d 2>/dev/null || true)
           if [ "$EVENT_ACTION" != "synchronize" ] && [ -s "$saved" ] && [ -n "$state" ] \
             && [ "$(printf '%s' "$state" | jq -r '.sha // empty' 2>/dev/null)" = "$HEAD_SHA" ]; then
             echo "mode=reuse" >> "$GITHUB_OUTPUT"
@@ -213,7 +230,7 @@ jobs:
           merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
           meta=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ((.body | capture(\"$STATE_PREFIX(?<s>[A-Za-z0-9+/=]+)\") | .s) // \"\")] | @tsv" | head -1 || true)
+            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ([.body | match(\"$STATE_PREFIX([A-Za-z0-9+/=]+)\"; \"g\") | .captures[0].string] | last // \"\")] | @tsv" | head -1 || true)
           IFS=$'\t' read -r node_id author state_line <<< "$meta" || true
           if [ -n "$state_line" ]; then
             # shellcheck disable=SC2016
@@ -348,12 +365,12 @@ jobs:
             echo "$COMMENT_MARKER"
             echo "### Claude standards review: $title"
             echo
-            echo "$RESULT" | jq -r '.summary'
+            echo "$RESULT" | jq -r '.summary | gsub("<!--"; "&lt;!--") | gsub("-->"; "--&gt;")'
             echo
             if [ "$((blocking + advisory))" -gt 0 ]; then
               echo "| | File | Rule | What to change |"
               echo "|---|---|---|---|"
-              jq -r --argjson limit "$ADVISORY_LIMIT" '([.[] | select(.advisory | not)] | sort_by(.file, .line)) + ([.[] | select(.advisory)] | sort_by(.file, .line) | .[:$limit]) | .[] | "| \(if .kind == "late" then "advisory, late" elif .advisory then "advisory" elif .kind == "new" then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"' "$findings"
+              jq -r --argjson limit "$ADVISORY_LIMIT" '([.[] | select(.advisory | not)] | sort_by(.file, .line)) + ([.[] | select(.advisory)] | sort_by(.file, .line) | .[:$limit]) | .[] | "| \(if .kind == "late" then "advisory, late" elif .advisory then "advisory" elif .kind == "new" then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("<!--"; "&lt;!--") | gsub("-->"; "--&gt;")) |"' "$findings"
               echo
               if [ "$advisory" -gt "$ADVISORY_LIMIT" ]; then
                 echo "$((advisory - ADVISORY_LIMIT)) more advisory findings are not shown. None of them block the merge."
@@ -383,7 +400,7 @@ jobs:
       # "passed" comment. The comment file lives in RUNNER_TEMP, outside the
       # checkout, so a file committed in the pull request cannot stand in for it.
       - name: Post or update the review comment
-        if: ${{ !cancelled() && steps.gate.outputs.mode != 'mirror' }}
+        if: ${{ !cancelled() && steps.gate.outputs.mode != 'mirror' && steps.gate.outputs.mode != 'stale' }}
         env:
           STATE_LINE: ${{ steps.scope.outputs.state_line }}
         run: |
