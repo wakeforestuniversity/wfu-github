@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0 (2026-10-23)
+
+* Taking the WordPress team's additions back out of this repository, so every project that uses it runs the same checks it ran before them. The WordPress team added an automated test run, a coding standards check and an AI code review here for WordPress, and they reached every PHP project using this repository. The WordPress repositories have moved to their own copy, apart from one older plugin. Affects every project that uses this repository's shared PHP workflow.
+* Technical details:
+  * Restoring `php-workflow.yml`, the `php-cache-restore` action and `README.md` exactly as they were in 1.2.0.
+  * Removing the PHPUnit step, the PHPCS job and the tool-binary guards that 1.3.0 to 1.4.1 added.
+  * Removing the `claude-review.yml` and `claude-mention.yml` reusable workflows that 1.5.0 added.
+  * Returning `actions/checkout` to v3, Snyk to `@master` and the coverage token to `inputs`, all as in 1.2.0.
+  * Keeping the 1.3.0 to 2.2.0 changelog entries in place as history.
+  * Pointing the `v1` tag at this release once it merges, so `@v1` callers pick it up.
+
 ## 2.2.0 (2026-10-21)
 
 * Making the standards override apply only to the code a person actually looked at. The override label used to stay on through later pushes, letting new commits merge unreviewed, and adding it erased the findings. Now the next push removes the label and reviews the new code, the findings stay visible while the label is on, and taking the label off brings the last review back for free. Affects every developer opening pull requests in repositories on `@v2`.
