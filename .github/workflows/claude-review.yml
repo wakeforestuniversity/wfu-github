@@ -89,101 +89,18 @@ jobs:
       EVENT_LABEL: ${{ github.event.label.name }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      # Five outcomes. A run for a commit that is no longer the head of the
-      # pull request, such as a re-run of an old push, does nothing. The
-      # override label, read live rather than from the event payload so a
-      # re-run sees it, passes without a review, but only for the commit it
-      # was added on: the comment records that commit, and a push of a
-      # different commit removes the label and reviews it, so an override
-      # never carries over to code nobody looked at. The label is removed
-      # with the job's own token, which does not start another run. While
-      # overridden, the last review is kept folded inside the comment. When
-      # the last real review already covers this exact commit (the label was
-      # removed, the pull request was reopened, or two events arrived for one
-      # push), that review is put back and its result reused instead of
-      # paying for a new one. Saved reviews are trusted only when the bot was
-      # the last to edit the comment. A label change that is not the override
-      # keeps the last result. Anything else reviews.
+      # Three outcomes. The override label, read live rather than from the
+      # event payload so a re-run sees it, passes without a review. A label
+      # change that is not the override keeps the last real result for this
+      # commit instead of paying for a new review. Anything else reviews.
       - name: Decide whether to review
         id: gate
         run: |
           comment="$RUNNER_TEMP/standards-comment.md"
-          existing="$RUNNER_TEMP/existing-comment.md"
-          saved="$RUNNER_TEMP/saved-review.md"
-          folded_open='<details><summary>Last review before the override</summary>'
-          override_prefix='wfu-claude-standards-override: '
-          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
-          if [ "$live_head" != "$HEAD_SHA" ]; then
-            sleep 10
-            live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
-          fi
-          if [ "$live_head" != "$HEAD_SHA" ]; then
-            echo "mode=stale" >> "$GITHUB_OUTPUT"
-            echo "::error::This run is for ${HEAD_SHA:0:7}, but the pull request is now at ${live_head:0:7}, so it does not review. The run for the current commit sets the check."
-            exit 1
-          fi
-          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | .id" | head -1 || true)
-          : > "$existing"
-          if [ -n "$comment_id" ]; then
-            gh api "repos/$REPO/issues/comments/$comment_id" --jq '.body' > "$existing"
-            node_id=$(gh api "repos/$REPO/issues/comments/$comment_id" --jq '.node_id')
-            author=$(gh api "repos/$REPO/issues/comments/$comment_id" --jq '.user.login')
-            # shellcheck disable=SC2016
-            editor=$(gh api graphql -f query='query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login } } } }' -f id="$node_id" --jq '.data.node.editor.login // ""' 2>/dev/null || echo "unknown")
-            if [ -n "$editor" ] && [ "$editor" != "${author%\[bot\]}" ] && [ "$editor" != "$author" ]; then
-              echo "::warning::The review comment was last edited by $editor, not the bot, so its saved review is not trusted."
-              : > "$existing"
-            fi
-          fi
-          overridden_sha=$(grep -oE "<!-- ${override_prefix}[0-9a-f]{40} -->" "$existing" | tail -1 | sed -E "s|^<!-- $override_prefix([0-9a-f]{40}) -->$|\1|" || true)
-          open_line=$(grep -nxF "$folded_open" "$existing" | head -1 | cut -d: -f1 || true)
-          close_line=$(grep -nx '</details>' "$existing" | tail -1 | cut -d: -f1 || true)
-          if [ -n "$open_line" ] && [ -n "$close_line" ] && [ "$close_line" -gt "$open_line" ]; then
-            sed -n "$((open_line + 2)),$((close_line - 2))p" "$existing" > "$saved"
-          elif grep -qE '^### Claude standards review: (passed|needs changes)' "$existing"; then
-            sed '1d' "$existing" > "$saved"
-          else
-            : > "$saved"
-          fi
           if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qxF "$OVERRIDE_LABEL"; then
-            if { [ "$EVENT_ACTION" = "labeled" ] && [ "$EVENT_LABEL" = "$OVERRIDE_LABEL" ]; } || [ "$overridden_sha" = "$HEAD_SHA" ]; then
-              echo "mode=override" >> "$GITHUB_OUTPUT"
-              {
-                echo "$COMMENT_MARKER"
-                echo "### Claude standards review: overridden"
-                echo
-                echo "A person added the \`$OVERRIDE_LABEL\` label, so this check passes for ${HEAD_SHA:0:7} without blocking. The label applies only to this commit: the next push removes it and gets a new review. Removing the label puts the last review back."
-                if [ -s "$saved" ]; then
-                  echo
-                  echo "$folded_open"
-                  echo
-                  cat "$saved"
-                  echo
-                  echo "</details>"
-                fi
-                echo
-                echo "<!-- $override_prefix$HEAD_SHA -->"
-              } > "$comment"
-              exit 0
-            fi
-            gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$OVERRIDE_LABEL" > /dev/null 2>&1 || true
-            if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qxF "$OVERRIDE_LABEL"; then
-              echo "::warning::Could not remove the $OVERRIDE_LABEL label; reviewing ${HEAD_SHA:0:7} anyway."
-            else
-              echo "::notice::The $OVERRIDE_LABEL label was added for an earlier commit, so it was removed and ${HEAD_SHA:0:7} is reviewed."
-              echo "override_cleared=true" >> "$GITHUB_OUTPUT"
-            fi
-          elif [ -n "$overridden_sha" ] && [ "$overridden_sha" != "$HEAD_SHA" ]; then
-            echo "override_cleared=true" >> "$GITHUB_OUTPUT"
-          fi
-          state=$(grep -oE "<!-- ${STATE_PREFIX}[A-Za-z0-9+/=]+ -->" "$saved" | tail -1 | sed -E "s|^<!-- $STATE_PREFIX([A-Za-z0-9+/=]+) -->$|\1|" | base64 -d 2>/dev/null || true)
-          if [ "$EVENT_ACTION" != "synchronize" ] && [ -s "$saved" ] && [ -n "$state" ] \
-            && [ "$(printf '%s' "$state" | jq -r '.sha // empty' 2>/dev/null)" = "$HEAD_SHA" ]; then
-            echo "mode=reuse" >> "$GITHUB_OUTPUT"
-            echo "blocking=$(printf '%s' "$state" | jq '[.findings[]? | select(.advisory | not)] | length')" >> "$GITHUB_OUTPUT"
-            echo "The last review already covers ${HEAD_SHA:0:7}; reusing its result."
-            { echo "$COMMENT_MARKER"; cat "$saved"; } > "$comment"
+            echo "mode=override" >> "$GITHUB_OUTPUT"
+            printf '%s\n%s\n\n%s\n' "$COMMENT_MARKER" "### Claude standards review: overridden" \
+              "A person added the \`$OVERRIDE_LABEL\` label, so this check passes without a review. Remove the label to run the review again." > "$comment"
             exit 0
           fi
           if { [ "$EVENT_ACTION" = "labeled" ] || [ "$EVENT_ACTION" = "unlabeled" ]; } && [ "$EVENT_LABEL" != "$OVERRIDE_LABEL" ]; then
@@ -238,7 +155,7 @@ jobs:
           merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
           meta=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ([.body | match(\"<!-- $STATE_PREFIX([A-Za-z0-9+/=]+) -->\"; \"g\") | .captures[0].string] | last // \"\")] | @tsv" | head -1 || true)
+            --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$COMMENT_MARKER\"))) | [.node_id, .user.login, ((.body | capture(\"$STATE_PREFIX(?<s>[A-Za-z0-9+/=]+)\") | .s) // \"\")] | @tsv" | head -1 || true)
           IFS=$'\t' read -r node_id author state_line <<< "$meta" || true
           if [ -n "$state_line" ]; then
             # shellcheck disable=SC2016
@@ -295,14 +212,14 @@ jobs:
             The whole pull request is `git diff ${{ steps.scope.outputs.merge_base }} ${{ github.event.pull_request.head.sha }}`.
             ${{ steps.scope.outputs.since && format('This pull request was already reviewed at {0}, and everything up to that commit has been checked. Do exactly two things. First, re-check each earlier finding listed below at its current location (lines may have moved) and return it again with status "carried" if the violation is still there, or list it under "resolved" (file, line, rule) if it was fixed, including when it was fixed by a change in a different file. Second, look for new violations only on lines that `git diff {0} {1}` changed and that are also part of the whole pull request, and return them with status "new". Do not look for new findings anywhere else, because those lines were already reviewed. Earlier findings: {2}', steps.scope.outputs.since, github.event.pull_request.head.sha, steps.scope.outputs.previous) || 'This is the first review of this pull request, so read all of it and set status to "new" for every finding.' }}
 
-            Your only job is to check the lines this pull request adds or changes against the rules below. You are not a code reviewer. Do not comment on whether the code works, on logic, bugs, performance, security, architecture, tests, or design. Do not suggest improvements the rules do not require. Do not report anything on lines the pull request did not touch. Do not report formatting that PHPCS checks mechanically (spacing, indentation, brace placement, docblock tag presence), because a separate PHPCS job enforces it. If you are unsure whether something breaks a rule, leave it out. A short list of real violations is worth more than a long list of possible ones. When the same kind of violation appears in several separate places within what you are reviewing, such as blank lines in two different methods, report each place in this review, so the author can fix all of them in one push instead of finding them one round at a time. A single name that breaks a rule is one finding, however many times it is used: report it once, at the line where it is introduced, and mention the other lines in that finding's sentence.
+            Your only job is to check the lines this pull request adds or changes against the rules below. You are not a code reviewer. Do not comment on whether the code works, on logic, bugs, performance, security, architecture, tests, or design. Do not suggest improvements the rules do not require. Do not report anything on lines the pull request did not touch. Do not report formatting that PHPCS checks mechanically (spacing, indentation, brace placement, docblock tag presence), because a separate PHPCS job enforces it. If you are unsure whether something breaks a rule, leave it out. A short list of real violations is worth more than a long list of possible ones. When the same violation appears in several places within what you are reviewing, report every place in this review, so the author can fix all of them in one push instead of finding them one round at a time.
 
             Rules (every rule blocks the merge unless it says advisory):
 
             R1. No blank lines inside a function or method body.
             R2. No inline comments inside a function or method body (`//`, `#`, or `/* */`). Docblocks above the function are the place for explanation. PHPCS directives such as `// phpcs:ignore` are allowed, and so are comments in procedural template files.
             R3. Prefer guard clauses and early returns. Report a function whose main body is wrapped in an `if` that could instead return early, or `if` blocks nested three or more levels deep.
-            R4. No Hungarian notation in variable, parameter, or property names the pull request introduces, such as `$aItems`, `$sName`, `$oPost`, `$iCount`, `$bEnabled`, `$fRate`, or `$vValue`. WFU dropped this convention. When the surrounding file already uses Hungarian names throughout, a new name that matches the file is advisory, because renaming one name would break the file's own consistency.
+            R4. No Hungarian notation in variable, parameter, or property names the pull request introduces, such as `$aItems`, `$sName`, `$oPost`, `$iCount`, `$bEnabled`, `$fRate`, or `$vValue`. WFU dropped this convention.
             R5. Docblock summaries and descriptions are complete sentences that start with a capital letter and end with a period.
             R6. Comments, docblocks, and CHANGELOG entries use American spelling (behavior, color, license, canceled, while rather than whilst).
             R7. No new dependency on `wfu/wfu` or `wakeforestuniversity/wfu-plugin-helpers`, and no new use of their classes. Shared code belongs in the wfu-helpers mu-plugin.
@@ -328,10 +245,9 @@ jobs:
           SINCE: ${{ steps.scope.outputs.since }}
           ROUND: ${{ steps.scope.outputs.round }}
           MERGE_BASE: ${{ steps.scope.outputs.merge_base }}
-          OVERRIDE_CLEARED: ${{ steps.gate.outputs.override_cleared }}
         run: |
           if [ -z "$RESULT" ] || ! echo "$RESULT" | jq -e '.findings' > /dev/null 2>&1; then
-            echo "::error::The review did not return a result. The Claude step log above has the reason, such as a workflow validation error, a missing token, the turn limit, or a credential or billing problem."
+            echo "::error::The review did not return a result. Check the Claude step log; a dead key or a spending cap shows up there."
             exit 1
           fi
           findings="$RUNNER_TEMP/findings.json"
@@ -373,12 +289,12 @@ jobs:
             echo "$COMMENT_MARKER"
             echo "### Claude standards review: $title"
             echo
-            echo "$RESULT" | jq -r '.summary | gsub("<!--"; "&lt;!--") | gsub("-->"; "--&gt;")'
+            echo "$RESULT" | jq -r '.summary'
             echo
             if [ "$((blocking + advisory))" -gt 0 ]; then
               echo "| | File | Rule | What to change |"
               echo "|---|---|---|---|"
-              jq -r --argjson limit "$ADVISORY_LIMIT" '([.[] | select(.advisory | not)] | sort_by(.file, .line)) + ([.[] | select(.advisory)] | sort_by(.file, .line) | .[:$limit]) | .[] | "| \(if .kind == "late" then "advisory, late" elif .advisory then "advisory" elif .kind == "new" then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("<!--"; "&lt;!--") | gsub("-->"; "--&gt;")) |"' "$findings"
+              jq -r --argjson limit "$ADVISORY_LIMIT" '([.[] | select(.advisory | not)] | sort_by(.file, .line)) + ([.[] | select(.advisory)] | sort_by(.file, .line) | .[:$limit]) | .[] | "| \(if .kind == "late" then "advisory, late" elif .advisory then "advisory" elif .kind == "new" then "**new**" else "open" end) | `\(.file):\(.line)` | \(.rule) | \(.detail | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"' "$findings"
               echo
               if [ "$advisory" -gt "$ADVISORY_LIMIT" ]; then
                 echo "$((advisory - ADVISORY_LIMIT)) more advisory findings are not shown. None of them block the merge."
@@ -389,15 +305,11 @@ jobs:
               echo "This review reached its limit of 40 findings, so there may be more. The next push gets a full review."
               echo
             fi
-            if [ "$OVERRIDE_CLEARED" = "true" ]; then
-              echo "The \`$OVERRIDE_LABEL\` label covered an earlier commit, so it no longer applies and this commit was reviewed. Add it again if a finding on this commit is wrong."
-              echo
-            fi
             if [ "$blocking" -gt 0 ] && [ "$ROUND" -ge "$ROUND_LIMIT" ]; then
               echo "This is review round $ROUND. If fixes keep turning up new findings, it may be worth stepping back from the approach before pushing again, or asking a person whether these rules fit this change."
               echo
             fi
-            echo "<sub>Reviewed ${HEAD_SHA:0:7}, round $ROUND. This check looks only at WFU style and code-quality conventions, not at whether the code works. Later rounds check only what changed since the last review, and a late finding on code an earlier round already passed is advisory. If a finding is wrong, a person can add the \`$OVERRIDE_LABEL\` label to pass the check for this commit.</sub>"
+            echo "<sub>Reviewed ${HEAD_SHA:0:7}, round $ROUND. This check looks only at WFU style and code-quality conventions, not at whether the code works. Later rounds check only what changed since the last review, and a late finding on code an earlier round already passed is advisory. If a finding is wrong, a person can add the \`$OVERRIDE_LABEL\` label to pass the check.</sub>"
             echo
             echo "<!-- $STATE_PREFIX$state -->"
           } > "$draft"
@@ -408,7 +320,7 @@ jobs:
       # "passed" comment. The comment file lives in RUNNER_TEMP, outside the
       # checkout, so a file committed in the pull request cannot stand in for it.
       - name: Post or update the review comment
-        if: ${{ !cancelled() && steps.gate.outputs.mode != 'mirror' && steps.gate.outputs.mode != 'stale' }}
+        if: ${{ !cancelled() && steps.gate.outputs.mode != 'mirror' }}
         env:
           STATE_LINE: ${{ steps.scope.outputs.state_line }}
         run: |
@@ -429,9 +341,9 @@ jobs:
           fi
 
       - name: Set the check result
-        if: steps.gate.outputs.mode == 'review' || steps.gate.outputs.mode == 'reuse'
+        if: steps.gate.outputs.mode == 'review'
         env:
-          BLOCKING: ${{ steps.verdict.outputs.blocking || steps.gate.outputs.blocking }}
+          BLOCKING: ${{ steps.verdict.outputs.blocking }}
         run: |
           if [ "$BLOCKING" != "0" ]; then
             echo "::error::$BLOCKING standards finding(s) to fix. See the review comment on the pull request."

@@ -1,22 +1,5 @@
 # Changelog
 
-## 2.2.0 (2026-10-21)
-
-* Making the standards override apply only to the code a person actually looked at. The override label used to stay on through later pushes, letting new commits merge unreviewed, and adding it erased the findings. Now the next push removes the label and reviews the new code, the findings stay visible while the label is on, and taking the label off brings the last review back for free. Affects every developer opening pull requests in repositories on `@v2`.
-* Technical details:
-  * Removing the `standards-override` label on `synchronize` with the job token, which starts no new run, then reviewing.
-  * Noting in the review comment when a push removed the override label.
-  * Folding the last review into the overridden comment instead of replacing it.
-  * Reusing the last review's comment and result when it covers the same head commit and the event is not a push.
-  * Trusting a saved review, for folding or reuse, only when the bot last edited the comment.
-  * Recording the overridden commit, and honoring the label only for that commit or a new override label event.
-  * Failing, without reviewing or posting, in a run whose commit is no longer the pull request's head.
-  * Escaping comment markers in Claude's text and matching only the full hidden state line, taking the last one.
-  * Continuing the review with a warning when the label cannot be removed.
-  * Reporting a rule-breaking name once where it is introduced, instead of once per use, so the fix count is not inflated.
-  * Making a new Hungarian name advisory under R4 when the surrounding file uses Hungarian names throughout.
-  * Replacing the "dead key or spending cap" error with the real list of reasons a review can return no result.
-
 ## 2.1.0 (2026-10-19)
 
 * Making the Claude standards review settle down instead of finding something new every time a pull request is updated. After the first review, it now checks only what changed since the last one and re-checks the problems it already reported, so fixing one finding no longer turns up a different one on code it already passed. After three rounds it suggests stepping back, and it keeps optional suggestions short. Affects every developer opening pull requests in repositories on `@v2`.
