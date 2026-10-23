@@ -40,7 +40,7 @@ jobs:
           fi
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -48,10 +48,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.claudeKey }}
-          # No prompt on purpose: with no prompt the action runs in tag mode
-          # and answers the mention it was triggered by. The model and turn
-          # cap are set here so a mention costs a known amount, the same way
-          # the standards review does.
-          claude_args: |
-            --model claude-sonnet-5-5
-            --max-turns 30
+          # No model and no prompt on purpose: with no prompt the action runs
+          # in tag mode and answers the mention it was triggered by. The model
+          # falls through to the Claude Code CLI's own default.
