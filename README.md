@@ -57,8 +57,6 @@ jobs:
 
 The check is named `review / Claude Standards Review`, which is the name to require in branch protection. It checks WFU style and code-quality rules only, never whether the code works. Drafts and Dependabot pull requests are skipped. A person can pass the check by adding the `standards-override` label when a finding is wrong; anyone who can label pull requests can do this, so treat the label as a reviewed decision. Adding or removing any other label keeps the last result rather than running a new review.
 
-The first review reads the whole pull request. Each later push is reviewed against the state the last comment saved: findings already reported are checked again, and new findings come only from what changed since. A new finding in a file the last round already reviewed, with no change since, is shown as advisory so it cannot fail a check that already passed that code. A force push or rebase starts over with a full review. From round three on, a failing comment suggests stepping back from the approach.
-
 ### Claude mentions
 
 `.github/workflows/claude.yml` in the consuming repository:
